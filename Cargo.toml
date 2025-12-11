@@ -1,0 +1,28 @@
+[package]
+name = "stok-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Burn with WGPU backend and Autodiff for gradient support
+burn = { version = "0.16", features = ["wgpu", "autodiff"] }
+
+# Development dependencies
+rand = "0.8"
+approx = "0.5"
+
+# Benchmark dependencies (optional)
+criterion = { version = "0.5", optional = true }
+
+[features]
+default = ["wgpu"]
+# Feature flag for CUDA support (activates cuda on burn)
+cuda = ["burn/cuda"]
+# Feature flag for benchmarking
+bench = ["criterion"]
+# WGPU feature flag (default)
+wgpu = [] 
+
+[[bench]]
+name = "stok_bench"
+harness = false
