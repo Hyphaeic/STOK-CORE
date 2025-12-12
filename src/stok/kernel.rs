@@ -295,9 +295,9 @@ mod tests {
         let eta_plus_data: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4, 0.0, 0.0, 0.0, 0.0];
         let eta_minus_data: Vec<f32> = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0];
         
-        kernel.eta_plus = Tensor::from_floats(eta_plus_data.as_slice(), &device)
+        kernel.eta_plus = Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
             .reshape([2, 2, 2]);
-        kernel.eta_minus = Tensor::from_floats(eta_minus_data.as_slice(), &device)
+        kernel.eta_minus = Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
             .reshape([2, 2, 2]);
 
         let combined = kernel.combined_stok();
@@ -330,7 +330,7 @@ mod tests {
             0.25, 0.25, // x_i=1, x_f=0, t_f=0,1
             0.25, 0.25, // x_i=1, x_f=1, t_f=0,1
         ];
-        kernel.eta_plus = Tensor::from_floats(eta_plus_data.as_slice(), &device)
+        kernel.eta_plus = Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
             .reshape([2, 2, 2]);
 
         let kappa_computed = kernel.kappa_from_eta();

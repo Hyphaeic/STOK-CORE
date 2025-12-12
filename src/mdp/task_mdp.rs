@@ -215,7 +215,7 @@ impl<B: Backend> TaskMDP<B> {
             }
         }
 
-        let transition: Tensor<B, 3> = Tensor::from_floats(
+        let transition: Tensor<B, 3> = Tensor::<B, 1>::from_floats(
             trans_data.as_slice(),
             device,
         ).reshape([n_states, n_actions, n_states]);
@@ -226,7 +226,7 @@ impl<B: Backend> TaskMDP<B> {
             let idx = (n_states - 1) * n_actions + a;
             goal_data[idx] = 1.0;
         }
-        let goal_fn: Tensor<B, 2> = Tensor::from_floats(goal_data.as_slice(), device)
+        let goal_fn: Tensor<B, 2> = Tensor::<B, 1>::from_floats(goal_data.as_slice(), device)
             .reshape([n_states, n_actions]);
 
         // No constraints
@@ -256,7 +256,7 @@ impl<B: Backend> TaskMDP<B> {
             let idx = fire_state * n_actions + a;
             constraint_data[idx] = 0.0;
         }
-        let constraint_fn: Tensor<B, 2> = Tensor::from_floats(constraint_data.as_slice(), device)
+        let constraint_fn: Tensor<B, 2> = Tensor::<B, 1>::from_floats(constraint_data.as_slice(), device)
             .reshape([n_states, n_actions]);
 
         // Recompute f1, f2
@@ -310,7 +310,7 @@ impl<B: Backend> TaskMDP<B> {
             }
         }
 
-        let transition: Tensor<B, 3> = Tensor::from_floats(trans_data.as_slice(), device)
+        let transition: Tensor<B, 3> = Tensor::<B, 1>::from_floats(trans_data.as_slice(), device)
             .reshape([n_states, n_actions, n_states]);
 
         // Goal at final state
@@ -318,7 +318,7 @@ impl<B: Backend> TaskMDP<B> {
         for a in 0..n_actions {
             goal_data[(n_states - 1) * n_actions + a] = 1.0;
         }
-        let goal_fn: Tensor<B, 2> = Tensor::from_floats(goal_data.as_slice(), device)
+        let goal_fn: Tensor<B, 2> = Tensor::<B, 1>::from_floats(goal_data.as_slice(), device)
             .reshape([n_states, n_actions]);
 
         let constraint_fn: Tensor<B, 2> = Tensor::ones([n_states, n_actions], device);
