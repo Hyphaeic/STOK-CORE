@@ -1,4 +1,7 @@
-pub mod device;
+//! Backend abstraction for GPU/CPU computation.
 
-// Re-export Device logic
-pub use device::*;
+mod device;
+
+pub use device::{
+    cpu_device, default_device, DefaultBackend, DefaultDevice, DeviceConfig, DeviceManager,
+};

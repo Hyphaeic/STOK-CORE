@@ -2,27 +2,38 @@
 name = "stok-core"
 version = "0.1.0"
 edition = "2021"
+description = "State-Time Option Kernels for compositional hierarchical planning"
+repository = "https://github.com/Hyphaeic/STOK-CORE/"
+keywords = ["reinforcement-learning", "planning", "gpu", "stok"]
+categories = ["science", "algorithms"]
 
 [dependencies]
-# Burn with WGPU backend and Autodiff for gradient support
-burn = { version = "0.16", features = ["wgpu", "autodiff"] }
+# Burn ML framework with WGPU backend
+burn = { version = "0.19", features = ["wgpu"] }
 
-# Development dependencies
+# Random number generation for sampling/testing
 rand = "0.8"
-approx = "0.5"
 
-# Benchmark dependencies (optional)
-criterion = { version = "0.5", optional = true }
+[dev-dependencies]
+# Floating-point comparison in tests
+approx = "0.5"
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
-default = ["wgpu"]
-# Feature flag for CUDA support (activates cuda on burn)
+default = []
+# CUDA backend (requires burn-cuda)
 cuda = ["burn/cuda"]
-# Feature flag for benchmarking
-bench = ["criterion"]
-# WGPU feature flag (default)
-wgpu = [] 
+# Enable benchmarks
+bench = []
 
 [[bench]]
-name = "stok_bench"
+name = "feasibility_bench"
 harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[profile.bench]
+debug = true
