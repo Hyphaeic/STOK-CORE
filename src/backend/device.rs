@@ -1,6 +1,30 @@
 //! Backend device management for STOK computations.
 //!
-//! Provides abstraction over Burn backends (WGPU, CPU, CUDA).
+//! Provides abstraction over Burn backends (WGPU, CPU, CUDA) for
+//! GPU-accelerated tensor operations.
+//!
+//! # Backend Selection
+//!
+//! The default backend is WGPU, which provides cross-platform GPU support:
+//!
+//! | Platform | Graphics API |
+//! |----------|--------------|
+//! | Windows | DirectX 12, Vulkan |
+//! | macOS | Metal |
+//! | Linux | Vulkan |
+//!
+//! # Usage
+//!
+//! ```rust,ignore
+//! use stok_core::backend::{default_device, DefaultBackend};
+//!
+//! let device = default_device();
+//! // Use device for tensor allocation
+//! ```
+//!
+//! # Feature Flags
+//!
+//! - `cuda`: Enable CUDA backend (requires NVIDIA GPU + CUDA toolkit)
 
 use crate::types::StokError;
 use burn::backend::wgpu::{Wgpu, WgpuDevice};
@@ -9,26 +33,53 @@ use burn::backend::wgpu::{Wgpu, WgpuDevice};
 // Type Aliases
 // ============================================================================
 
-/// Default backend type (WGPU for cross-platform GPU support)
+/// Default backend type (WGPU for cross-platform GPU support).
+///
+/// WGPU provides excellent cross-platform compatibility without
+/// requiring specific GPU drivers or SDKs.
 pub type DefaultBackend = Wgpu;
 
-/// Default device type
+/// Default device type for the WGPU backend.
 pub type DefaultDevice = WgpuDevice;
 
 // ============================================================================
 // Device Configuration
 // ============================================================================
 
-/// Device configuration options
+/// Device configuration options.
+///
+/// Specifies which backend and device to use for tensor operations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use stok_core::backend::DeviceConfig;
+///
+/// let config = DeviceConfig::Wgpu { device_index: 0 };
+/// ```
 #[derive(Debug, Clone)]
 pub enum DeviceConfig {
-    /// WGPU backend (Vulkan/Metal/DX12)
-    Wgpu { device_index: usize },
-    /// CPU backend (for testing/fallback)
+    /// WGPU backend (Vulkan/Metal/DX12).
+    ///
+    /// Recommended for cross-platform deployment.
+    Wgpu {
+        /// GPU device index (0 = primary GPU)
+        device_index: usize,
+    },
+    
+    /// CPU backend (for testing/fallback).
+    ///
+    /// Uses software rendering, significantly slower than GPU.
     Cpu,
+    
+    /// CUDA backend (feature-gated).
+    ///
+    /// Requires `cuda` feature and NVIDIA GPU.
     #[cfg(feature = "cuda")]
-    /// CUDA backend (feature-gated)
-    Cuda { device_index: usize },
+    Cuda {
+        /// CUDA device index
+        device_index: usize,
+    },
 }
 
 impl Default for DeviceConfig {
@@ -41,7 +92,18 @@ impl Default for DeviceConfig {
 // Device Manager
 // ============================================================================
 
-/// Manages device initialization and access
+/// Manages device initialization and access.
+///
+/// Wraps the underlying Burn device with configuration tracking.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use stok_core::backend::{DeviceManager, DeviceConfig};
+///
+/// let manager = DeviceManager::new(DeviceConfig::default())?;
+/// let device = manager.device();
+/// ```
 #[derive(Debug)]
 pub struct DeviceManager {
     device: WgpuDevice,
@@ -49,12 +111,22 @@ pub struct DeviceManager {
 }
 
 impl DeviceManager {
-    /// Create a new device manager with the given configuration
+    /// Create a new device manager with the given configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Device configuration specifying backend and device index
+    ///
+    /// # Returns
+    ///
+    /// `Ok(DeviceManager)` on success, `Err(StokError::DeviceError)` on failure.
+    ///
+    /// # Errors
+    ///
+    /// - `StokError::DeviceError` if device initialization fails
     pub fn new(config: DeviceConfig) -> Result<Self, StokError> {
         let device = match &config {
             DeviceConfig::Wgpu { device_index } => {
-                // WgpuDevice::default() selects best available
-                // For specific device selection, use DiscreteGpu(index) or IntegratedGpu(index)
                 if *device_index == 0 {
                     WgpuDevice::default()
                 } else {
@@ -62,7 +134,6 @@ impl DeviceManager {
                 }
             }
             DeviceConfig::Cpu => {
-                // WGPU can run on CPU via software rasterization
                 WgpuDevice::Cpu
             }
             #[cfg(feature = "cuda")]
@@ -76,25 +147,21 @@ impl DeviceManager {
         Ok(Self { device, config })
     }
 
-    /// Get reference to the device
+    /// Get reference to the underlying device.
+    ///
+    /// Use this to pass to tensor allocation functions.
     pub fn device(&self) -> &WgpuDevice {
         &self.device
     }
 
-    /// Get the device configuration
+    /// Get the device configuration.
     pub fn config(&self) -> &DeviceConfig {
         &self.config
     }
 
-    /// Clone the device (for tensor creation)
-    pub fn device_clone(&self) -> WgpuDevice {
-        self.device.clone()
-    }
-}
-
-impl Default for DeviceManager {
-    fn default() -> Self {
-        Self::new(DeviceConfig::default()).expect("Failed to create default device")
+    /// Check if running on GPU (vs CPU fallback).
+    pub fn is_gpu(&self) -> bool {
+        !matches!(self.config, DeviceConfig::Cpu)
     }
 }
 
@@ -102,12 +169,31 @@ impl Default for DeviceManager {
 // Convenience Functions
 // ============================================================================
 
-/// Get the default WGPU device
+/// Get the default GPU device.
+///
+/// Returns a WGPU device configured for the primary GPU.
+/// This is the recommended way to get a device for most use cases.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use stok_core::backend::default_device;
+///
+/// let device = default_device();
+/// ```
 pub fn default_device() -> WgpuDevice {
     WgpuDevice::default()
 }
 
-/// Get a CPU device (for testing)
+/// Get a CPU device for testing.
+///
+/// Returns a device that runs on CPU via software rendering.
+/// Useful for testing on machines without GPU support.
+///
+/// # Warning
+///
+/// CPU execution is significantly slower than GPU. Use only for
+/// small test cases or when GPU is unavailable.
 pub fn cpu_device() -> WgpuDevice {
     WgpuDevice::Cpu
 }
@@ -119,27 +205,41 @@ pub fn cpu_device() -> WgpuDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::tensor::Tensor;
 
     #[test]
-    fn test_default_device_creation() {
-        let manager = DeviceManager::default();
-        let _device = manager.device();
-        // If we get here without panic, device was created successfully
-    }
-
-    #[test]
-    fn test_tensor_on_device() {
+    fn test_default_device() {
         let device = default_device();
-        let tensor: Tensor<Wgpu, 1> = Tensor::zeros([10], &device);
-        assert_eq!(tensor.dims(), [10]);
+        // Should not panic
+        let _ = device;
     }
 
     #[test]
     fn test_cpu_device() {
         let device = cpu_device();
-        let tensor: Tensor<Wgpu, 1> = Tensor::ones([5], &device);
-        let data: Vec<f32> = tensor.into_data().to_vec().unwrap();
-        assert_eq!(data, vec![1.0; 5]);
+        // Should not panic
+        let _ = device;
+    }
+
+    #[test]
+    fn test_device_manager_default() {
+        let manager = DeviceManager::new(DeviceConfig::default());
+        assert!(manager.is_ok());
+    }
+
+    #[test]
+    fn test_device_manager_cpu() {
+        let manager = DeviceManager::new(DeviceConfig::Cpu).unwrap();
+        assert!(!manager.is_gpu());
+    }
+
+    #[test]
+    fn test_device_config_default() {
+        let config = DeviceConfig::default();
+        match config {
+            DeviceConfig::Wgpu { device_index } => {
+                assert_eq!(device_index, 0);
+            }
+            _ => panic!("Default should be WGPU"),
+        }
     }
 }

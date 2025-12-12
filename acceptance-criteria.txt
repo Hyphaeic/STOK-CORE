@@ -1,0 +1,89 @@
+# STOK Implementation Acceptance Criteria - Complete Checklist
+
+## Phase 1: Foundations & Core Data Structures
+
+- [X] Project compiles with `cargo build --release`
+- [X] No warnings with `cargo clippy`
+- [X] Code formatted with `cargo fmt`
+- [X] All modules properly exported
+- [X] `STOKKernel::new(10, 5, &device)` succeeds on WGPU
+- [X] All tensors initialize to zero
+- [X] Shapes match specifications
+- [X] `TaskMDP::simple_chain(10, &device)` creates valid MDP
+- [X] Transition tensor sums to 1.0 along last dimension
+- [X] Goal and constraint functions in [0, 1]
+- [X] `TaskMDP::validate()` passes for valid MDPs
+- [ ] `TaskMDP::validate()` fails for invalid MDPs
+- [ ] `STOKKernel::validate()` correctly checks invariants
+- [ ] All unit tests pass
+- [X] Tests run on GPU (WGPU backend)
+- [ ] Test coverage for error conditions
+- [ ] `cargo doc` generates documentation
+- [ ] All public items documented
+- [ ] Paper references included
+
+## Phase 2: The Core Optimization Loop (MVP)
+
+- [ ] Trivial MDP converges to known κ* = [1, 1, 1]
+- [ ] Constrained MDP correctly identifies infeasible states
+- [ ] 10-state chain matches expected feasibility pattern
+- [ ] Stochastic MDP produces valid probability distributions
+- [ ] STOK normalization holds (sum to 1.0) within tolerance 1e-5
+- [ ] κ-η consistency holds within tolerance 1e-5
+- [ ] Policy indices are valid (in range [0, n_actions))
+- [ ] Single Bellman backup < 1ms for 100 states
+- [ ] Full convergence < 100ms for 100 states
+- [ ] GPU utilization > 50% during iteration (check with profiler)
+- [ ] No unnecessary CPU-GPU synchronization in hot loop
+- [ ] Handles edge case: all states feasible
+- [ ] Handles edge case: no states feasible
+- [ ] Handles edge case: goal state = constraint state (should be infeasible)
+- [ ] Numerical stability with very small probabilities
+- [ ] Convergence guaranteed (terminates within max_iterations)
+- [ ] All public functions documented
+- [ ] No clippy warnings
+- [ ] Formatted with rustfmt
+- [ ] All tests passing
+
+## Phase 3: The Compositional Layer
+
+- [ ] SOK from STOK correctly marginalizes time
+- [ ] SOK composition equals matrix multiplication
+- [ ] STOK composition produces normalized kernel
+- [ ] Composition with identity STOK preserves original
+- [ ] Composed time horizon is T1 + T2 - 1
+- [ ] SOK composition matches marginalized STOK composition
+- [ ] Decomposition (η⁺, η⁻) preserved correctly through composition
+- [ ] κ consistency: κ = sum of η⁺
+- [ ] Composition is associative (within tolerance)
+- [ ] Failure propagates correctly (failed o1 → failed sequence)
+- [ ] Feasibility is non-increasing (κ_composed ≤ κ_1)
+- [ ] SOK composition < 10ms for S=100
+- [ ] STOK composition < 100ms for S=50, T=20
+- [ ] Memory usage is O(S² * T_composed)
+- [ ] All public functions documented
+- [ ] Paper equation references included
+- [ ] No clippy warnings
+- [ ] All tests passing
+
+## Phase 4: The Control Interface
+
+- [ ] GoalKernel stores and retrieves STOKs correctly
+- [ ] Feasibility queries return correct κ values
+- [ ] Affordance mask correctly identifies feasible goals
+- [ ] Multiple goals can be added and managed
+- [ ] Breadth-first search finds valid plans
+- [ ] Best-first search prioritizes high-feasibility paths
+- [ ] Search respects max_depth limit
+- [ ] Pruning reduces nodes expanded
+- [ ] Target goal is correctly identified
+- [ ] Termination sampling produces valid (state, time) pairs
+- [ ] Sample distribution matches STOK probabilities
+- [ ] Outcome sampling respects κ probabilities
+- [ ] Query interface provides clean API
+- [ ] Plan validation catches infeasible plans
+- [ ] Plan simulation produces reasonable success rates
+- [ ] GPU-CPU data transfer is efficient
+- [ ] Queries complete within target latency
+- [ ] Search scales reasonably with problem size
+- [ ] No unnecessary GPU synchronization
