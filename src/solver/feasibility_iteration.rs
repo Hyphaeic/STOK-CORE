@@ -1,61 +1,70 @@
-//! Main feasibility iteration loop.
+//! Feasibility Iteration - The Core Optimization Loop.
 //!
-//! Implements Algorithm 1 from Ringstrom & Schrater (2025) to compute
-//! the optimal cumulative feasibility function κ* and construct the
-//! full State-Time Option Kernel.
+//! This module implements the main algorithm that computes the optimal
+//! cumulative feasibility function κ* and policy π**, then constructs
+//! the complete STOK.
 //!
-//! # Algorithm
+//! # Algorithm Overview
 //!
 //! ```text
-//! 1. Initialize: κ⁰ ← 0, π⁰ ← 0  (zero init critical per Appendix 7)
-//! 2. Repeat:
-//!    (κ^{d+1}, π^{d+1}) ← bellman_backup(κ^d, M)
-//!    δ ← ‖κ^{d+1} - κ^d‖_∞
+//! 1. Initialize: κ ← 0, π ← 0  (CRITICAL: must be zero)
+//! 2. Repeat until convergence:
+//!    (κ_new, π_new) ← bellman_backup_kappa(κ, MDP)
+//!    δ ← ||κ_new - κ||_∞
+//!    κ ← κ_new, π ← π_new
 //!    if δ < ε: break
 //! 3. Construct STOK from (κ*, π**)
-//! 4. Return STOKKernel
 //! ```
 //!
-//! # Performance Target
+//! # Theoretical Guarantees
 //!
-//! < 100ms convergence for 100-state problems on GPU
+//! Per Ringstrom & Schrater (2025) Appendix E:
+//! - Convergence is guaranteed (contraction mapping)
+//! - κ is monotonically non-decreasing
+//! - Zero initialization is essential for correctness
+
+use std::time::Instant;
 
 use burn::prelude::*;
 use burn::tensor::Int;
-use std::time::Instant;
 
 use crate::mdp::TaskMDP;
 use crate::stok::STOKKernel;
-use crate::types::{MDPDimensions, STOKDimensions, StokError};
-
-use super::bellman::bellman_backup_kappa;
-use super::convergence::{
-    ConvergenceConfig, ConvergenceState, 
-    should_check_convergence, compute_convergence_delta
+use crate::types::StokError;
+use crate::solver::bellman::bellman_backup_kappa;
+use crate::solver::convergence::{
+    ConvergenceConfig, ConvergenceState, ConvergenceReason,
+    check_kappa_convergence, should_check_convergence, validate_monotonicity,
 };
-use super::stok_construction::construct_stok;
+use crate::solver::stok_construction::construct_stok;
+use crate::utils::validate_probability_tensor;
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
 /// Configuration for feasibility iteration.
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct FeasibilityIterationConfig {
-    /// Convergence detection settings
+    /// Convergence detection settings.
     pub convergence: ConvergenceConfig,
     
-    /// Time horizon for STOK construction
+    /// Maximum time horizon for STOK construction.
     pub max_time: usize,
     
-    /// Whether to compute full η⁺, η⁻ after κ converges
-    /// If false, only κ and π are computed (faster)
+    /// Whether to compute full STOK (η⁺, η⁻) after κ converges.
+    /// If false, returns STOKKernel with only κ and π populated.
     pub compute_full_stok: bool,
     
-    /// Run validation checks during iteration (slower, for debugging)
+    /// Whether to validate intermediate κ values during iteration.
+    /// Useful for debugging but adds overhead.
     pub validate_intermediate: bool,
     
-    /// Record κ at each iteration (for analysis/debugging)
+    /// Whether to check monotonicity invariant during iteration.
+    /// Violations indicate bugs.
+    pub check_monotonicity: bool,
+    
+    /// Whether to record κ history for analysis.
     pub record_history: bool,
 }
 
@@ -66,33 +75,46 @@ impl Default for FeasibilityIterationConfig {
             max_time: 20,
             compute_full_stok: true,
             validate_intermediate: false,
+            check_monotonicity: false,
             record_history: false,
         }
     }
 }
 
 impl FeasibilityIterationConfig {
-    /// Set time horizon for STOK.
+    /// Create config for quick testing (reduced iterations, higher tolerance).
+    pub fn fast() -> Self {
+        Self {
+            convergence: ConvergenceConfig::fast(),
+            max_time: 10,
+            compute_full_stok: true,
+            validate_intermediate: false,
+            check_monotonicity: false,
+            record_history: false,
+        }
+    }
+    
+    /// Create config for debugging (validation enabled, history recorded).
+    pub fn debug() -> Self {
+        Self {
+            convergence: ConvergenceConfig::strict(),
+            max_time: 30,
+            compute_full_stok: true,
+            validate_intermediate: true,
+            check_monotonicity: true,
+            record_history: true,
+        }
+    }
+    
+    /// Set max time horizon.
     pub fn with_max_time(mut self, max_time: usize) -> Self {
         self.max_time = max_time;
         self
     }
     
-    /// Disable full STOK construction (only compute κ, π).
+    /// Disable full STOK computation (only compute κ and π).
     pub fn without_stok(mut self) -> Self {
         self.compute_full_stok = false;
-        self
-    }
-    
-    /// Enable κ history recording.
-    pub fn with_history(mut self) -> Self {
-        self.record_history = true;
-        self
-    }
-    
-    /// Enable intermediate validation (for debugging).
-    pub fn with_validation(mut self) -> Self {
-        self.validate_intermediate = true;
         self
     }
 }
@@ -102,60 +124,77 @@ impl FeasibilityIterationConfig {
 // ============================================================================
 
 /// Timing information for feasibility iteration.
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct IterationTiming {
-    /// Total wall-clock time in milliseconds
+    /// Total time including STOK construction.
     pub total_ms: f64,
     
-    /// Average time per iteration in milliseconds
+    /// Time spent in Bellman backup iterations.
+    pub iteration_ms: f64,
+    
+    /// Average time per iteration.
     pub per_iteration_ms: f64,
     
-    /// Time spent on STOK construction in milliseconds
+    /// Time spent constructing STOK (if computed).
     pub stok_construction_ms: f64,
 }
 
-/// Result of feasibility iteration.
+/// Complete result from feasibility iteration.
 #[derive(Debug)]
 pub struct FeasibilityIterationResult<B: Backend> {
-    /// Computed STOK kernel (or partial if compute_full_stok = false)
+    /// The computed STOK kernel.
     pub kernel: STOKKernel<B>,
     
-    /// Final convergence state
+    /// Final convergence state.
     pub convergence: ConvergenceState,
     
-    /// κ values at each iteration (if record_history = true)
+    /// Optional: κ values at each iteration for analysis.
     pub kappa_history: Option<Vec<Vec<f32>>>,
     
-    /// Timing breakdown
+    /// Timing breakdown.
     pub timing: IterationTiming,
 }
 
+impl<B: Backend> FeasibilityIterationResult<B> {
+    /// Check if iteration converged successfully.
+    pub fn converged(&self) -> bool {
+        self.convergence.reason == ConvergenceReason::ToleranceReached
+    }
+    
+    /// Get number of iterations performed.
+    pub fn iterations(&self) -> usize {
+        self.convergence.iteration
+    }
+    
+    /// Get final convergence delta.
+    pub fn final_delta(&self) -> f32 {
+        self.convergence.delta
+    }
+}
+
 // ============================================================================
-// Main Entry Points
+// Main Algorithm
 // ============================================================================
 
-/// Run feasibility iteration to compute optimal STOK.
+/// Run feasibility iteration to compute κ* and optionally construct STOK.
 ///
-/// This is the main entry point for Phase 2. Given a TaskMDP, computes
-/// the optimal cumulative feasibility function κ* and policy π**, then
-/// constructs the full State-Time Option Kernel.
+/// This is the main entry point for solving a Task MDP.
 ///
 /// # Arguments
-/// * `mdp` - Task MDP with transition dynamics, goal, and constraint functions
-/// * `config` - Iteration configuration (tolerance, max_time, etc.)
+/// * `mdp` - Task MDP to solve
+/// * `config` - Configuration options
 ///
 /// # Returns
-/// `FeasibilityIterationResult` containing the STOK kernel and diagnostics
-///
-/// # Errors
-/// - `StokError::ConvergenceFailure` if max_iterations exceeded
-/// - `StokError::NumericalInstability` if κ leaves [0,1]
+/// Complete result including STOK, convergence info, and timing
 ///
 /// # Example
 /// ```ignore
 /// let mdp = TaskMDP::simple_chain(10, 20, &device);
 /// let config = FeasibilityIterationConfig::default();
 /// let result = feasibility_iteration(&mdp, config)?;
+/// 
+/// println!("Converged in {} iterations", result.iterations());
+/// let kappa = result.kernel.kappa;
 /// ```
 pub fn feasibility_iteration<B: Backend>(
     mdp: &TaskMDP<B>,
@@ -166,141 +205,161 @@ pub fn feasibility_iteration<B: Backend>(
     let s = mdp.n_states();
     
     // ========================================================================
-    // Step 1: Initialize (critical: zero init per Appendix 7)
+    // Step 1: Initialize (CRITICAL: zero initialization)
     // ========================================================================
     
-    // TODO: Initialize κ to zeros
-    // let mut kappa: Tensor<B, 1> = Tensor::zeros([s], &device);
+    // Per paper Appendix 7: zero initialization is essential
+    // Non-zero init corrupts unreachable state values
+    let mut kappa: Tensor<B, 1> = Tensor::zeros([s], &device);
+    let mut policy: Tensor<B, 1, Int> = Tensor::zeros([s], &device);
     
-    // TODO: Initialize policy to zeros (arbitrary initial policy)
-    // let mut policy: Tensor<B, 1, Int> = Tensor::zeros([s], &device);
+    let mut convergence_state = if config.record_history {
+        ConvergenceState::with_history()
+    } else {
+        ConvergenceState::new()
+    };
     
-    // TODO: Initialize convergence state
-    // let mut convergence_state = ConvergenceState::new();
-    
-    // TODO: Initialize history if recording
-    // let mut kappa_history = if config.record_history { Some(vec![]) } else { None };
+    let mut kappa_history: Option<Vec<Vec<f32>>> = if config.record_history {
+        Some(Vec::with_capacity(config.convergence.max_iterations))
+    } else {
+        None
+    };
     
     // ========================================================================
     // Step 2: Main iteration loop
     // ========================================================================
     
-    // TODO: Implement main loop
-    // loop {
-    //     let kappa_old = kappa.clone();
-    //     
-    //     // Bellman backup
-    //     let (kappa_new, policy_new) = bellman_backup_kappa(&kappa, mdp);
-    //     kappa = kappa_new;
-    //     policy = policy_new;
-    //     
-    //     // Record history if enabled
-    //     if let Some(ref mut history) = kappa_history {
-    //         let kappa_vec = kappa.clone().into_data().to_vec::<f32>().unwrap();
-    //         history.push(kappa_vec);
-    //     }
-    //     
-    //     // Check convergence
-    //     if should_check_convergence(convergence_state.iteration, &config.convergence) {
-    //         let delta = compute_convergence_delta(&kappa_old, &kappa);
-    //         convergence_state.update(delta, &config.convergence);
-    //         
-    //         if convergence_state.should_terminate(&config.convergence) {
-    //             break;
-    //         }
-    //     } else {
-    //         convergence_state.iteration += 1;
-    //     }
-    //     
-    //     // Optional intermediate validation
-    //     if config.validate_intermediate {
-    //         validate_kappa_bounds(&kappa)?;
-    //     }
-    // }
+    let iteration_start = Instant::now();
+    
+    loop {
+        // Store old κ for convergence check
+        let kappa_old = kappa.clone();
+        
+        // Bellman backup: the core computation
+        let (kappa_new, policy_new) = bellman_backup_kappa(&kappa, mdp);
+        
+        // Update state
+        kappa = kappa_new;
+        policy = policy_new;
+        
+        // Record history if enabled
+        if let Some(ref mut history) = kappa_history {
+            let kappa_vec: Vec<f32> = kappa.clone().into_data().to_vec().unwrap();
+            history.push(kappa_vec);
+        }
+        
+        // Optional: validate intermediate κ values
+        if config.validate_intermediate {
+            if !validate_probability_tensor(&kappa, 1e-5) {
+                return Err(StokError::NumericalInstability {
+                    location: format!("iteration {}", convergence_state.iteration),
+                    value: kappa.clone().max().into_scalar().elem(),
+                });
+            }
+        }
+        
+        // Optional: check monotonicity invariant
+        if config.check_monotonicity {
+            if let Err(decrease) = validate_monotonicity(&kappa_old, &kappa, 1e-6) {
+                return Err(StokError::NumericalInstability {
+                    location: format!("monotonicity violation at iteration {}", convergence_state.iteration),
+                    value: decrease,
+                });
+            }
+        }
+        
+        // Check convergence (may be batched for performance)
+        if should_check_convergence(convergence_state.iteration, &config.convergence) {
+            let delta = check_kappa_convergence(&kappa_old, &kappa);
+            convergence_state.update(delta, &config.convergence);
+            
+            if convergence_state.should_terminate(&config.convergence) {
+                break;
+            }
+        } else {
+            convergence_state.increment();
+        }
+    }
+    
+    let iteration_time = iteration_start.elapsed();
     
     // ========================================================================
     // Step 3: Construct STOK if requested
     // ========================================================================
     
-    // TODO: Construct STOK
-    // let stok_start = Instant::now();
-    // let kernel = if config.compute_full_stok {
-    //     construct_stok(&kappa, &policy, mdp, config.max_time)?
-    // } else {
-    //     let mdp_dims = MDPDimensions::new(s, mdp.n_actions(), config.max_time);
-    //     STOKKernel::from_kappa_policy(kappa, policy, &mdp_dims, &device)
-    // };
-    // let stok_time = stok_start.elapsed();
+    let stok_start = Instant::now();
+    
+    let kernel = if config.compute_full_stok {
+        construct_stok(&kappa, &policy, mdp, config.max_time)?
+    } else {
+        // Return kernel with only κ and π populated (η tensors are zeros)
+        STOKKernel::from_kappa_policy(kappa, policy, config.max_time, &device)
+    };
+    
+    let stok_time = stok_start.elapsed();
     
     // ========================================================================
     // Step 4: Assemble result
     // ========================================================================
     
-    // TODO: Compute timing and return result
-    // let total_time = start_time.elapsed();
-    // 
-    // Ok(FeasibilityIterationResult {
-    //     kernel,
-    //     convergence: convergence_state,
-    //     kappa_history,
-    //     timing: IterationTiming {
-    //         total_ms: total_time.as_secs_f64() * 1000.0,
-    //         per_iteration_ms: total_time.as_secs_f64() * 1000.0 
-    //                           / convergence_state.iteration.max(1) as f64,
-    //         stok_construction_ms: stok_time.as_secs_f64() * 1000.0,
-    //     },
-    // })
+    let total_time = start_time.elapsed();
+    let iterations = convergence_state.iteration.max(1) as f64;
     
-    todo!("Implement feasibility_iteration - see steps above")
+    Ok(FeasibilityIterationResult {
+        kernel,
+        convergence: convergence_state,
+        kappa_history,
+        timing: IterationTiming {
+            total_ms: total_time.as_secs_f64() * 1000.0,
+            iteration_ms: iteration_time.as_secs_f64() * 1000.0,
+            per_iteration_ms: iteration_time.as_secs_f64() * 1000.0 / iterations,
+            stok_construction_ms: stok_time.as_secs_f64() * 1000.0,
+        },
+    })
 }
 
-/// Convenience wrapper with default configuration.
+/// Convenience wrapper: solve MDP with default configuration.
 ///
-/// Simplest API for solving a TaskMDP.
+/// This is the simplest API for basic usage.
 ///
 /// # Example
 /// ```ignore
-/// let kernel = solve_task_mdp(&mdp)?;
+/// let mdp = TaskMDP::simple_chain(10, 20, &device);
+/// let stok = solve_task_mdp(&mdp)?;
 /// ```
 pub fn solve_task_mdp<B: Backend>(
     mdp: &TaskMDP<B>,
 ) -> Result<STOKKernel<B>, StokError> {
-    let config = FeasibilityIterationConfig::default()
-        .with_max_time(mdp.dims().max_time);
-    
-    let result = feasibility_iteration(mdp, config)?;
+    let result = feasibility_iteration(mdp, FeasibilityIterationConfig::default())?;
     Ok(result.kernel)
 }
 
-// ============================================================================
-// Validation Helpers
-// ============================================================================
-
-/// Validate that κ values are in [0, 1].
+/// Compute only κ* without STOK construction.
 ///
-/// Should never fail if implementation is correct; violations indicate bugs.
-fn validate_kappa_bounds<B: Backend>(
-    _kappa: &Tensor<B, 1>,
-) -> Result<(), StokError> {
-    // TODO: Implement
-    // Check min >= 0 and max <= 1
-    // Return StokError::NumericalInstability if violated
-    
-    Ok(())  // Placeholder
+/// Faster than full solve when η distributions aren't needed.
+pub fn compute_kappa<B: Backend>(
+    mdp: &TaskMDP<B>,
+) -> Result<(Tensor<B, 1>, Tensor<B, 1, Int>), StokError> {
+    let config = FeasibilityIterationConfig::default().without_stok();
+    let result = feasibility_iteration(mdp, config)?;
+    Ok((result.kernel.kappa, result.kernel.policy))
 }
 
-/// Validate monotonicity: κ_new >= κ_old (element-wise).
-///
-/// Per Appendix E, κ should never decrease during iteration.
-#[allow(dead_code)]
-fn validate_monotonicity<B: Backend>(
-    _kappa_old: &Tensor<B, 1>,
-    _kappa_new: &Tensor<B, 1>,
-) -> Result<(), StokError> {
-    // TODO: Implement
-    // Check that kappa_new >= kappa_old - tolerance for all elements
-    
-    Ok(())  // Placeholder
+// ============================================================================
+// Validation Utilities
+// ============================================================================
+
+/// Validate κ values are in valid probability range [0, 1].
+fn validate_kappa_bounds<B: Backend>(kappa: &Tensor<B, 1>) -> Result<(), StokError> {
+    if !validate_probability_tensor(kappa, 1e-5) {
+        let max_val: f32 = kappa.clone().max().into_scalar().elem();
+        let min_val: f32 = kappa.clone().min().into_scalar().elem();
+        return Err(StokError::InvalidProbability {
+            value: if min_val < 0.0 { min_val } else { max_val },
+            context: "kappa bounds violation".into(),
+        });
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -310,11 +369,179 @@ fn validate_monotonicity<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    // TODO: Add tests
-    // - test_trivial_mdp_converges (3-state, κ* = [1,1,1])
-    // - test_chain_mdp_convergence
-    // - test_constrained_mdp (fire state has κ = 0)
-    // - test_convergence_history
-    // - test_config_without_stok
+    use crate::backend::{DefaultBackend, default_device};
+    use crate::mdp::TaskMDP;
+    use crate::utils::approx_eq;
+
+    #[test]
+    fn test_feasibility_iteration_trivial() {
+        let device = default_device();
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(3, 10, &device);
+        
+        let config = FeasibilityIterationConfig::default();
+        let result = feasibility_iteration(&mdp, config).unwrap();
+        
+        // All states should be feasible
+        let kappa_data: Vec<f32> = result.kernel.kappa.into_data().to_vec().unwrap();
+        
+        for (i, &k) in kappa_data.iter().enumerate() {
+            assert!(approx_eq(k, 1.0, 1e-4), 
+                "State {} should have κ=1.0, got {}", i, k);
+        }
+    }
+
+    #[test]
+    fn test_feasibility_iteration_converges() {
+        let device = default_device();
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(10, 20, &device);
+        
+        let config = FeasibilityIterationConfig::default();
+        let result = feasibility_iteration(&mdp, config).unwrap();
+        
+        assert!(result.converged(), 
+            "Should converge, got reason: {}", result.convergence.reason);
+        assert!(result.iterations() > 0, "Should have at least 1 iteration");
+        assert!(result.iterations() <= 100, 
+            "Should converge in reasonable iterations, got {}", result.iterations());
+    }
+
+    #[test]
+    fn test_feasibility_iteration_constrained() {
+        let device = default_device();
+        // Chain with fire at state 5
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::constrained_chain(10, 5, 20, &device);
+        
+        let config = FeasibilityIterationConfig::default();
+        let result = feasibility_iteration(&mdp, config).unwrap();
+        
+        let kappa_data: Vec<f32> = result.kernel.kappa.into_data().to_vec().unwrap();
+        
+        // States 0-5 should be infeasible (blocked by fire)
+        for i in 0..=5 {
+            assert!(kappa_data[i] < 0.01, 
+                "State {} should be infeasible, got κ={}", i, kappa_data[i]);
+        }
+        
+        // States 6-9 should be feasible
+        for i in 6..10 {
+            assert!(approx_eq(kappa_data[i], 1.0, 1e-4),
+                "State {} should be feasible, got κ={}", i, kappa_data[i]);
+        }
+    }
+
+    #[test]
+    fn test_feasibility_iteration_stochastic() {
+        let device = default_device();
+        // 80% success probability
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::stochastic_chain(5, 0.8, 15, &device);
+        
+        let config = FeasibilityIterationConfig::default();
+        let result = feasibility_iteration(&mdp, config).unwrap();
+        
+        let kappa_data: Vec<f32> = result.kernel.kappa.into_data().to_vec().unwrap();
+        
+        // All states should be feasible with probability < 1.0 (stochastic)
+        // But goal state should have κ = 1.0
+        assert!(approx_eq(kappa_data[4], 1.0, 1e-4), 
+            "Goal state should have κ=1.0, got {}", kappa_data[4]);
+        
+        // Non-goal states should have 0 < κ < 1
+        for i in 0..4 {
+            assert!(kappa_data[i] > 0.5, 
+                "State {} should have κ > 0.5, got {}", i, kappa_data[i]);
+            assert!(kappa_data[i] <= 1.0,
+                "State {} should have κ ≤ 1.0, got {}", i, kappa_data[i]);
+        }
+    }
+
+    #[test]
+    fn test_solve_task_mdp() {
+        let device = default_device();
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 10, &device);
+        
+        let stok = solve_task_mdp(&mdp).unwrap();
+        
+        assert_eq!(stok.eta_plus.dims(), [5, 5, 20]);
+        assert_eq!(stok.kappa.dims(), [5]);
+    }
+
+    #[test]
+    fn test_compute_kappa_only() {
+        let device = default_device();
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 10, &device);
+        
+        let (kappa, policy) = compute_kappa(&mdp).unwrap();
+        
+        assert_eq!(kappa.dims(), [5]);
+        assert_eq!(policy.dims(), [5]);
+        
+        // Verify κ values
+        let kappa_data: Vec<f32> = kappa.into_data().to_vec().unwrap();
+        for &k in &kappa_data {
+            assert!(approx_eq(k, 1.0, 1e-4));
+        }
+    }
+
+    #[test]
+    fn test_timing_information() {
+        let device = default_device();
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 10, &device);
+        
+        let config = FeasibilityIterationConfig::default();
+        let result = feasibility_iteration(&mdp, config).unwrap();
+        
+        assert!(result.timing.total_ms > 0.0, "Total time should be positive");
+        assert!(result.timing.iteration_ms >= 0.0, "Iteration time should be non-negative");
+        assert!(result.timing.per_iteration_ms >= 0.0, "Per-iteration time should be non-negative");
+    }
+
+    #[test]
+    fn test_history_recording() {
+        let device = default_device();
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(3, 5, &device);
+        
+        let config = FeasibilityIterationConfig {
+            record_history: true,
+            ..Default::default()
+        };
+        let result = feasibility_iteration(&mdp, config).unwrap();
+        
+        assert!(result.kappa_history.is_some(), "History should be recorded");
+        let history = result.kappa_history.unwrap();
+        assert!(!history.is_empty(), "History should have entries");
+        
+        // Each entry should have 3 values (one per state)
+        for entry in &history {
+            assert_eq!(entry.len(), 3);
+        }
+    }
+
+    #[test]
+    fn test_stok_normalization() {
+        let device = default_device();
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 15, &device);
+        
+        let result = feasibility_iteration(&mdp, FeasibilityIterationConfig::default()).unwrap();
+        
+        // Validate STOK normalization
+        assert!(result.kernel.validate(1e-4).is_ok());
+    }
+
+    #[test]
+    fn test_max_iterations_termination() {
+        let device = default_device();
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(3, 5, &device);
+        
+        let config = FeasibilityIterationConfig {
+            convergence: ConvergenceConfig::default()
+                .with_max_iterations(2)
+                .with_epsilon(1e-20), // Very tight, won't converge
+            ..Default::default()
+        };
+        
+        let result = feasibility_iteration(&mdp, config).unwrap();
+        
+        assert_eq!(result.convergence.reason, ConvergenceReason::MaxIterationsReached);
+        assert_eq!(result.iterations(), 2);
+    }
 }

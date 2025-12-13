@@ -1,94 +1,120 @@
-//! Convergence detection for feasibility iteration.
+//! Convergence detection utilities for feasibility iteration.
 //!
-//! Monitors the L∞ distance between successive κ estimates and
-//! determines when the iteration has converged to κ*.
+//! Provides configuration and state tracking for the iterative
+//! optimization loop that computes κ*.
 //!
 //! # Convergence Criterion
-//!
+//! The feasibility iteration converges when:
 //! ```text
-//! δ^(d) = ‖κ^(d+1) - κ^(d)‖_∞ = max_x |κ^(d+1)(x) - κ^(d)(x)|
-//! Converged iff δ^(d) < ε
+//! δ = ||κ^{d+1} - κ^{d}||_∞ < ε
 //! ```
 //!
 //! # Theoretical Guarantee
-//!
-//! Per Appendix E of Ringstrom & Schrater (2025), the κ-OKBE Bellman
-//! operator is a contraction mapping, guaranteeing:
-//! - Convergence to unique fixed point κ*
-//! - Monotonic increase of κ (κ^(d+1) ≥ κ^(d) element-wise)
+//! Per Ringstrom & Schrater (2025) Appendix E, feasibility iteration
+//! is a contraction mapping, guaranteeing convergence.
 
-use std::fmt;
+use burn::prelude::*;
+use crate::utils::{linf_distance, DEFAULT_CONVERGENCE_TOLERANCE, DEFAULT_MAX_ITERATIONS, DEFAULT_CHECK_INTERVAL};
 
 // ============================================================================
-// Configuration
+// Convergence Configuration
 // ============================================================================
 
-/// Configuration for convergence detection.
-#[derive(Clone, Debug)]
+/// Configuration for feasibility iteration convergence.
+#[derive(Debug, Clone)]
 pub struct ConvergenceConfig {
-    /// Convergence tolerance (L∞ norm threshold)
-    /// Default: 1e-6
-    pub epsilon: f32,
-    
-    /// Maximum iterations before forced termination
-    /// Default: 1000
+    /// Maximum allowed iterations before forced termination.
     pub max_iterations: usize,
     
-    /// Check convergence every N iterations (for performance)
-    /// Default: 1 (check every iteration)
+    /// L∞ norm threshold for convergence detection.
+    /// Iteration stops when ||κ_new - κ_old||_∞ < epsilon.
+    pub epsilon: f32,
+    
+    /// How often to check convergence (every N iterations).
+    /// Set to 1 for accurate detection, higher for performance.
     pub check_interval: usize,
+    
+    /// Whether to stop immediately upon convergence.
+    /// If false, continues until max_iterations.
+    pub early_stop: bool,
 }
 
 impl Default for ConvergenceConfig {
     fn default() -> Self {
         Self {
-            epsilon: 1e-6,
-            max_iterations: 1000,
-            check_interval: 1,
+            max_iterations: DEFAULT_MAX_ITERATIONS,
+            epsilon: DEFAULT_CONVERGENCE_TOLERANCE,
+            check_interval: DEFAULT_CHECK_INTERVAL,
+            early_stop: true,
         }
     }
 }
 
 impl ConvergenceConfig {
-    /// Create config with custom tolerance.
-    pub fn with_epsilon(mut self, epsilon: f32) -> Self {
-        self.epsilon = epsilon;
+    /// Create a new config with specified max iterations.
+    pub fn with_max_iterations(mut self, n: usize) -> Self {
+        self.max_iterations = n;
         self
     }
     
-    /// Create config with custom max iterations.
-    pub fn with_max_iterations(mut self, max_iter: usize) -> Self {
-        self.max_iterations = max_iter;
+    /// Create a new config with specified epsilon.
+    pub fn with_epsilon(mut self, eps: f32) -> Self {
+        self.epsilon = eps;
         self
     }
     
-    /// Create config with batched convergence checks.
-    ///
-    /// For large state spaces, checking every iteration can be
-    /// expensive due to GPU-CPU synchronization. Batching helps.
-    pub fn with_check_interval(mut self, interval: usize) -> Self {
-        self.check_interval = interval.max(1);
+    /// Create a new config with specified check interval.
+    pub fn with_check_interval(mut self, n: usize) -> Self {
+        self.check_interval = n.max(1); // At least 1
         self
+    }
+    
+    /// Create a new config with early stopping disabled.
+    pub fn without_early_stop(mut self) -> Self {
+        self.early_stop = false;
+        self
+    }
+    
+    /// Create a strict config for testing (low tolerance, check every iteration).
+    pub fn strict() -> Self {
+        Self {
+            max_iterations: 10000,
+            epsilon: 1e-8,
+            check_interval: 1,
+            early_stop: true,
+        }
+    }
+    
+    /// Create a fast config for benchmarking (higher tolerance, batched checks).
+    pub fn fast() -> Self {
+        Self {
+            max_iterations: 500,
+            epsilon: 1e-4,
+            check_interval: 5,
+            early_stop: true,
+        }
     }
 }
 
 // ============================================================================
-// State Tracking
+// Convergence Reason
 // ============================================================================
 
-/// Reason for iteration termination.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Reason why iteration terminated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConvergenceReason {
-    /// Iteration has not yet terminated
+    /// Iteration is still running.
     NotConverged,
-    /// δ < ε achieved
+    
+    /// L∞ norm fell below epsilon threshold.
     ToleranceReached,
-    /// max_iterations exceeded
+    
+    /// Maximum iterations reached without convergence.
     MaxIterationsReached,
 }
 
-impl fmt::Display for ConvergenceReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for ConvergenceReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotConverged => write!(f, "not converged"),
             Self::ToleranceReached => write!(f, "tolerance reached"),
@@ -97,50 +123,113 @@ impl fmt::Display for ConvergenceReason {
     }
 }
 
-/// State of the convergence process.
-#[derive(Clone, Debug)]
+// ============================================================================
+// Convergence State
+// ============================================================================
+
+/// Tracks the state of convergence during iteration.
+#[derive(Debug, Clone)]
 pub struct ConvergenceState {
-    /// Current iteration count
+    /// Current iteration count.
     pub iteration: usize,
     
-    /// Most recent δ = ‖κ_new - κ_old‖_∞
+    /// Current L∞ distance between consecutive κ estimates.
     pub delta: f32,
     
-    /// Whether iteration has converged
+    /// Whether convergence has been detected.
     pub converged: bool,
     
-    /// Reason for termination (if converged)
+    /// Reason for termination (if terminated).
     pub reason: ConvergenceReason,
+    
+    /// Optional: history of delta values for analysis.
+    pub delta_history: Vec<f32>,
+    
+    /// Whether to record delta history.
+    record_history: bool,
 }
 
 impl ConvergenceState {
-    /// Create new convergence state at iteration 0.
+    /// Create a new convergence state.
     pub fn new() -> Self {
         Self {
             iteration: 0,
             delta: f32::INFINITY,
             converged: false,
             reason: ConvergenceReason::NotConverged,
+            delta_history: Vec::new(),
+            record_history: false,
         }
     }
     
-    /// Update state after computing new delta.
-    pub fn update(&mut self, delta: f32, config: &ConvergenceConfig) {
+    /// Create a new convergence state that records history.
+    pub fn with_history() -> Self {
+        Self {
+            record_history: true,
+            delta_history: Vec::with_capacity(100),
+            ..Self::new()
+        }
+    }
+    
+    /// Update state after a convergence check.
+    pub fn update(&mut self, new_delta: f32, config: &ConvergenceConfig) {
         self.iteration += 1;
-        self.delta = delta;
+        self.delta = new_delta;
         
-        if delta < config.epsilon {
+        if self.record_history {
+            self.delta_history.push(new_delta);
+        }
+        
+        // Check convergence conditions
+        if new_delta < config.epsilon {
             self.converged = true;
             self.reason = ConvergenceReason::ToleranceReached;
         } else if self.iteration >= config.max_iterations {
-            self.converged = true;
             self.reason = ConvergenceReason::MaxIterationsReached;
         }
     }
     
+    /// Increment iteration counter without checking convergence.
+    /// Used when batching convergence checks.
+    pub fn increment(&mut self) {
+        self.iteration += 1;
+    }
+    
     /// Check if iteration should terminate.
-    pub fn should_terminate(&self, _config: &ConvergenceConfig) -> bool {
-        self.converged
+    pub fn should_terminate(&self, config: &ConvergenceConfig) -> bool {
+        // Always terminate if we hit max iterations
+        if self.iteration >= config.max_iterations {
+            return true;
+        }
+        
+        // Terminate on convergence if early stopping is enabled
+        if self.converged && config.early_stop {
+            return true;
+        }
+        
+        false
+    }
+    
+    /// Check if the iteration converged successfully.
+    pub fn is_converged(&self) -> bool {
+        self.reason == ConvergenceReason::ToleranceReached
+    }
+    
+    /// Get convergence rate (ratio of consecutive deltas).
+    /// Returns None if not enough history.
+    pub fn convergence_rate(&self) -> Option<f32> {
+        if self.delta_history.len() < 2 {
+            return None;
+        }
+        let n = self.delta_history.len();
+        let prev = self.delta_history[n - 2];
+        let curr = self.delta_history[n - 1];
+        
+        if prev.abs() < 1e-10 {
+            None
+        } else {
+            Some(curr / prev)
+        }
     }
 }
 
@@ -151,28 +240,49 @@ impl Default for ConvergenceState {
 }
 
 // ============================================================================
-// Convergence Checking Functions
+// Convergence Check Functions
 // ============================================================================
 
-/// Check if convergence should be evaluated this iteration.
+/// Check if we should perform a convergence check this iteration.
 ///
 /// For performance, convergence checks can be batched every N iterations.
 #[inline]
 pub fn should_check_convergence(iteration: usize, config: &ConvergenceConfig) -> bool {
-    iteration % config.check_interval == 0
+    iteration % config.check_interval == 0 || iteration == 0
 }
 
-/// Compute convergence delta from two κ tensors.
+/// Compute convergence metric between old and new κ.
 ///
-/// Returns `‖kappa_new - kappa_old‖_∞`
-pub fn compute_convergence_delta<B: burn::prelude::Backend>(
-    kappa_old: &burn::prelude::Tensor<B, 1>,
-    kappa_new: &burn::prelude::Tensor<B, 1>,
+/// # Returns
+/// L∞ distance: max_i |κ_new[i] - κ_old[i]|
+pub fn check_kappa_convergence<B: Backend>(
+    old: &Tensor<B, 1>,
+    new: &Tensor<B, 1>,
 ) -> f32 {
-    // TODO: Implement using linf_distance from utils::numerics
-    // crate::utils::linf_distance(kappa_old, kappa_new)
+    linf_distance(old, new)
+}
+
+/// Validate that κ values are monotonically non-decreasing.
+///
+/// Per the paper, κ should never decrease during feasibility iteration.
+/// A decrease indicates a bug.
+///
+/// # Returns
+/// - `Ok(())` if monotonicity holds
+/// - `Err(max_decrease)` if any value decreased, with the magnitude
+pub fn validate_monotonicity<B: Backend>(
+    old: &Tensor<B, 1>,
+    new: &Tensor<B, 1>,
+    tolerance: f32,
+) -> Result<(), f32> {
+    let diff = new.clone() - old.clone();
+    let min_diff: f32 = diff.min().into_scalar().elem();
     
-    todo!("Implement compute_convergence_delta")
+    if min_diff < -tolerance {
+        Err(-min_diff)
+    } else {
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -182,48 +292,79 @@ pub fn compute_convergence_delta<B: burn::prelude::Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{DefaultBackend, default_device};
 
     #[test]
     fn test_convergence_config_default() {
         let config = ConvergenceConfig::default();
-        assert_eq!(config.epsilon, 1e-6);
-        assert_eq!(config.max_iterations, 1000);
+        assert_eq!(config.max_iterations, DEFAULT_MAX_ITERATIONS);
+        assert_eq!(config.epsilon, DEFAULT_CONVERGENCE_TOLERANCE);
         assert_eq!(config.check_interval, 1);
+        assert!(config.early_stop);
     }
 
     #[test]
     fn test_convergence_config_builder() {
         let config = ConvergenceConfig::default()
-            .with_epsilon(1e-4)
             .with_max_iterations(500)
-            .with_check_interval(10);
+            .with_epsilon(1e-4)
+            .with_check_interval(5);
         
-        assert_eq!(config.epsilon, 1e-4);
         assert_eq!(config.max_iterations, 500);
-        assert_eq!(config.check_interval, 10);
+        assert_eq!(config.epsilon, 1e-4);
+        assert_eq!(config.check_interval, 5);
     }
 
     #[test]
-    fn test_convergence_state_tolerance_reached() {
-        let config = ConvergenceConfig::default().with_epsilon(1e-4);
+    fn test_convergence_state_new() {
+        let state = ConvergenceState::new();
+        assert_eq!(state.iteration, 0);
+        assert_eq!(state.delta, f32::INFINITY);
+        assert!(!state.converged);
+        assert_eq!(state.reason, ConvergenceReason::NotConverged);
+    }
+
+    #[test]
+    fn test_convergence_state_update_converged() {
         let mut state = ConvergenceState::new();
+        let config = ConvergenceConfig::default().with_epsilon(1e-4);
         
-        state.update(1e-5, &config);  // Below tolerance
+        // Update with delta below epsilon
+        state.update(1e-5, &config);
         
+        assert_eq!(state.iteration, 1);
         assert!(state.converged);
         assert_eq!(state.reason, ConvergenceReason::ToleranceReached);
     }
 
     #[test]
-    fn test_convergence_state_max_iterations() {
-        let config = ConvergenceConfig::default().with_max_iterations(2);
+    fn test_convergence_state_update_not_converged() {
         let mut state = ConvergenceState::new();
+        let config = ConvergenceConfig::default().with_epsilon(1e-4);
         
-        state.update(1.0, &config);  // iter 1, not converged
+        // Update with delta above epsilon
+        state.update(1e-3, &config);
+        
+        assert_eq!(state.iteration, 1);
         assert!(!state.converged);
+        assert_eq!(state.reason, ConvergenceReason::NotConverged);
+    }
+
+    #[test]
+    fn test_convergence_state_max_iterations() {
+        let mut state = ConvergenceState::new();
+        let config = ConvergenceConfig::default()
+            .with_max_iterations(5)
+            .with_epsilon(1e-10); // Very tight, won't converge
         
-        state.update(0.5, &config);  // iter 2, max reached
-        assert!(state.converged);
+        for i in 0..5 {
+            state.update(0.1, &config);
+            if i < 4 {
+                assert!(!state.should_terminate(&config), "Should not terminate at iteration {}", i);
+            }
+        }
+        
+        assert!(state.should_terminate(&config));
         assert_eq!(state.reason, ConvergenceReason::MaxIterationsReached);
     }
 
@@ -231,10 +372,62 @@ mod tests {
     fn test_should_check_convergence() {
         let config = ConvergenceConfig::default().with_check_interval(5);
         
-        assert!(should_check_convergence(0, &config));
+        assert!(should_check_convergence(0, &config));  // Always check first
         assert!(!should_check_convergence(1, &config));
         assert!(!should_check_convergence(4, &config));
         assert!(should_check_convergence(5, &config));
         assert!(should_check_convergence(10, &config));
+    }
+
+    #[test]
+    fn test_check_kappa_convergence() {
+        let device = default_device();
+        
+        let old: Tensor<DefaultBackend, 1> = Tensor::from_floats([0.0, 0.5, 1.0], &device);
+        let new: Tensor<DefaultBackend, 1> = Tensor::from_floats([0.1, 0.5, 0.9], &device);
+        
+        let delta = check_kappa_convergence(&old, &new);
+        
+        // Max difference is 0.1 (at positions 0 and 2)
+        assert!((delta - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_validate_monotonicity_ok() {
+        let device = default_device();
+        
+        let old: Tensor<DefaultBackend, 1> = Tensor::from_floats([0.0, 0.5, 0.8], &device);
+        let new: Tensor<DefaultBackend, 1> = Tensor::from_floats([0.1, 0.6, 0.9], &device);
+        
+        assert!(validate_monotonicity(&old, &new, 1e-6).is_ok());
+    }
+
+    #[test]
+    fn test_validate_monotonicity_violation() {
+        let device = default_device();
+        
+        let old: Tensor<DefaultBackend, 1> = Tensor::from_floats([0.5, 0.5, 0.8], &device);
+        let new: Tensor<DefaultBackend, 1> = Tensor::from_floats([0.4, 0.6, 0.9], &device);
+        
+        let result = validate_monotonicity(&old, &new, 1e-6);
+        assert!(result.is_err());
+        
+        let decrease = result.unwrap_err();
+        assert!((decrease - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_convergence_state_history() {
+        let mut state = ConvergenceState::with_history();
+        let config = ConvergenceConfig::default();
+        
+        state.update(1.0, &config);
+        state.update(0.5, &config);
+        state.update(0.25, &config);
+        
+        assert_eq!(state.delta_history.len(), 3);
+        
+        let rate = state.convergence_rate().unwrap();
+        assert!((rate - 0.5).abs() < 1e-6); // 0.25 / 0.5 = 0.5
     }
 }
