@@ -303,6 +303,64 @@ impl MDPDimensions {
 }
 
 // ============================================================================
+// STOK Dimension Tracking (no action dimension - policy already determined)
+// ============================================================================
+
+/// STOK dimension specification.
+///
+/// Unlike MDPDimensions, STOKs don't have an action dimension because
+/// the policy is already fixed. Per Eq. [17] of Ringstrom & Schrater (2025),
+/// a STOK is "a transition kernel with one action, o_g" — the option itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct STOKDimensions {
+    pub n_states: usize,
+    pub max_time: usize,
+}
+
+impl STOKDimensions {
+    pub fn new(n_states: usize, max_time: usize) -> Self {
+        Self { n_states, max_time }
+    }
+
+    /// Validate dimensions are non-zero
+    pub fn validate(&self) -> Result<(), StokError> {
+        if self.n_states == 0 {
+            return Err(StokError::InvalidDimension {
+                name: "n_states".into(),
+                value: 0,
+                reason: "must be > 0".into(),
+            });
+        }
+        if self.max_time == 0 {
+            return Err(StokError::InvalidDimension {
+                name: "max_time".into(),
+                value: 0,
+                reason: "must be > 0".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Create from MDP dimensions (drops n_actions)
+    pub fn from_mdp(mdp_dims: &MDPDimensions) -> Self {
+        Self {
+            n_states: mdp_dims.n_states,
+            max_time: mdp_dims.max_time,
+        }
+    }
+
+    /// Total size of STOK tensor (η⁺ or η⁻)
+    pub fn stok_size(&self) -> usize {
+        self.n_states * self.n_states * self.max_time
+    }
+
+    /// Total size of state-time tensor slice
+    pub fn state_time_size(&self) -> usize {
+        self.n_states * self.max_time
+    }
+}
+
+// ============================================================================
 // Error Types
 // ============================================================================
 
@@ -651,5 +709,50 @@ mod tests {
         let err = StokError::DeviceError("test".into());
         // Verify it implements std::error::Error
         let _: &dyn std::error::Error = &err;
+    }
+
+    // ========================================================================
+    // STOKDimensions Tests
+    // ========================================================================
+
+    #[test]
+    fn test_stok_dimensions_new() {
+        let dims = STOKDimensions::new(10, 5);
+        assert_eq!(dims.n_states, 10);
+        assert_eq!(dims.max_time, 5);
+    }
+
+    #[test]
+    fn test_stok_dimensions_validate_valid() {
+        let dims = STOKDimensions::new(10, 5);
+        assert!(dims.validate().is_ok());
+    }
+
+    #[test]
+    fn test_stok_dimensions_validate_zero_states() {
+        let dims = STOKDimensions::new(0, 5);
+        assert!(dims.validate().is_err());
+    }
+
+    #[test]
+    fn test_stok_dimensions_validate_zero_time() {
+        let dims = STOKDimensions::new(10, 0);
+        assert!(dims.validate().is_err());
+    }
+
+    #[test]
+    fn test_stok_dimensions_from_mdp() {
+        let mdp_dims = MDPDimensions::new(10, 3, 5);
+        let stok_dims = STOKDimensions::from_mdp(&mdp_dims);
+        assert_eq!(stok_dims.n_states, 10);
+        assert_eq!(stok_dims.max_time, 5);
+        // n_actions is intentionally dropped
+    }
+
+    #[test]
+    fn test_stok_dimensions_sizes() {
+        let dims = STOKDimensions::new(4, 3);
+        assert_eq!(dims.stok_size(), 4 * 4 * 3);  // S * S * T
+        assert_eq!(dims.state_time_size(), 4 * 3);  // S * T
     }
 }

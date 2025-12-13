@@ -206,8 +206,13 @@ impl<B: Backend> TaskMDP<B> {
     ///
     /// `Ok(())` if row-stochastic, `Err(StokError::NotNormalized)` otherwise.
     pub fn validate_stochastic(&self, tolerance: f32) -> Result<(), StokError> {
-        // Sum over last dimension (x') and squeeze to get [S, A]
-        let row_sums: Tensor<B, 2> = self.transition.clone().sum_dim(2).squeeze::<2>();
+        // Sum over last dimension (x') and reshape to [S, A]
+        // Note: Using reshape instead of squeeze to handle n_states=1 edge case
+        let n_states = self.dims.n_states;
+        let n_actions = self.dims.n_actions;
+        let row_sums: Tensor<B, 2> = self.transition.clone()
+            .sum_dim(2)
+            .reshape([n_states, n_actions]);
         let device = row_sums.device();
         let ones: Tensor<B, 2> = Tensor::ones(row_sums.dims(), &device);
         let diff = (row_sums - ones).abs();

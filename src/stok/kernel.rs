@@ -30,7 +30,7 @@
 //! Ringstrom, T., & Schrater, P. (2025). Section G.2: "State-Time Option Kernel"
 
 use burn::prelude::*;
-use crate::types::{MDPDimensions, StokError, DEFAULT_PROBABILITY_TOLERANCE};
+use crate::types::{STOKDimensions, StokError, DEFAULT_PROBABILITY_TOLERANCE};
 
 /// State-Time Option Kernel with success/failure decomposition.
 ///
@@ -100,7 +100,7 @@ pub struct STOKKernel<B: Backend> {
     pub policy: Tensor<B, 1, Int>,
 
     /// Cached dimension information.
-    pub dims: MDPDimensions,
+    pub dims: STOKDimensions,
 }
 
 impl<B: Backend> STOKKernel<B> {
@@ -129,28 +129,26 @@ impl<B: Backend> STOKKernel<B> {
     /// let kernel: STOKKernel<DefaultBackend> = STOKKernel::new(10, 20, &device);
     /// ```
     pub fn new(n_states: usize, max_time: usize, device: &B::Device) -> Self {
-        let dims = MDPDimensions::new(n_states, 0, max_time);
-        dims.validate().expect("Invalid dimensions for STOKKernel");
-
-        // Zero initialization is critical (see paper Appendix 7)
-        let eta_plus = Tensor::zeros([n_states, n_states, max_time], device);
-        let eta_minus = Tensor::zeros([n_states, n_states, max_time], device);
-        let kappa = Tensor::zeros([n_states], device);
-        let policy = Tensor::zeros([n_states], device);
+        let dims = STOKDimensions::new(n_states, max_time);
+        
+        // Validate dimensions
+        if let Err(e) = dims.validate() {
+            panic!("Invalid dimensions for STOKKernel: {:?}", e);
+        }
 
         Self {
-            eta_plus,
-            eta_minus,
-            kappa,
-            policy,
+            eta_plus: Tensor::zeros([n_states, n_states, max_time], device),
+            eta_minus: Tensor::zeros([n_states, n_states, max_time], device),
+            kappa: Tensor::zeros([n_states], device),
+            policy: Tensor::zeros([n_states], device),
             dims,
         }
     }
 
-    /// Create STOK kernel from pre-computed κ and π.
+    /// Create STOK kernel from pre-computed κ and π (without full η tensors).
     ///
-    /// Used when only feasibility (not full STOK) is needed.
-    /// η⁺ and η⁻ are left as zeros.
+    /// Used when `compute_full_stok = false` in feasibility iteration config.
+    /// The η⁺ and η⁻ tensors are zero-initialized placeholders.
     ///
     /// # Arguments
     ///
@@ -161,18 +159,15 @@ impl<B: Backend> STOKKernel<B> {
     pub fn from_kappa_policy(
         kappa: Tensor<B, 1>,
         policy: Tensor<B, 1, Int>,
-        max_time: usize,
+        dims: STOKDimensions,
         device: &B::Device,
     ) -> Self {
-        let n_states = kappa.dims()[0];
-        let dims = MDPDimensions::new(n_states, 0, max_time);
-
-        let eta_plus = Tensor::zeros([n_states, n_states, max_time], device);
-        let eta_minus = Tensor::zeros([n_states, n_states, max_time], device);
-
+        let n_states = dims.n_states;
+        let max_time = dims.max_time;
+    
         Self {
-            eta_plus,
-            eta_minus,
+            eta_plus: Tensor::zeros([n_states, n_states, max_time], device),
+            eta_minus: Tensor::zeros([n_states, n_states, max_time], device),
             kappa,
             policy,
             dims,
@@ -421,7 +416,7 @@ pub struct STOKData {
     /// Policy action indices by state
     pub policy: Vec<i32>,
     /// Dimension specification
-    pub dims: MDPDimensions,
+    pub dims: STOKDimensions,
 }
 
 // ============================================================================
@@ -811,7 +806,12 @@ mod tests {
             &device,
         );
 
-        let kernel = STOKKernel::<DefaultBackend>::from_kappa_policy(kappa, policy, 10, &device);
+        let kernel = STOKKernel::<DefaultBackend>::from_kappa_policy(
+            kappa,
+            policy,
+            STOKDimensions::new(3, 10),  // n_states=3 (from kappa length), max_time=10
+            &device,
+        );
 
         assert_eq!(kernel.n_states(), 3);
         assert_eq!(kernel.max_time(), 10);

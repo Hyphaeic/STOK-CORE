@@ -124,7 +124,7 @@ pub mod stok;
 pub mod prelude {
     pub use crate::types::{
         StateIdx, ActionIdx, TimeIdx, GoalId,
-        MDPDimensions, StokError,
+        MDPDimensions, STOKDimensions, StokError,
         DEFAULT_CONVERGENCE_TOLERANCE,
         DEFAULT_PROBABILITY_TOLERANCE,
     };
