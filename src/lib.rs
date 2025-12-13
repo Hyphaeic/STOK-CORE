@@ -107,6 +107,8 @@ pub mod types;
 pub mod backend;
 pub mod mdp;
 pub mod stok;
+pub mod solver;
+pub mod utils;
 
 /// Common imports for STOK usage.
 ///
@@ -245,3 +247,12 @@ mod integration_tests {
         }
     }
 }
+// Phase 2 re-exports
+pub use solver::{
+    feasibility_iteration,
+    solve_task_mdp,
+    FeasibilityIterationConfig,
+    FeasibilityIterationResult,
+    ConvergenceConfig,
+    ConvergenceState,
+};
