@@ -55,9 +55,10 @@ pub fn construct_stok<B: Backend>(
     
     // Validate inputs
     if max_time == 0 {
-        return Err(StokError::InvalidDimensions {
-            expected: vec![1],
-            got: vec![0],
+        return Err(StokError::InvalidDimension {
+            name: "max_time".into(),
+            value: 0,
+            reason: "max_time must be > 0 for STOK construction".into(),
         });
     }
     
@@ -70,8 +71,8 @@ pub fn construct_stok<B: Backend>(
     
     // f₁_π(x) = f₁(x, π(x)) - immediate success probability
     let f1_pi = gather_by_policy(&mdp.f1, policy);
-    
     // f₂_π(x) = f₂(x, π(x)) - continuation probability  
+    
     let f2_pi = gather_by_policy(&mdp.f2, policy);
     
     // f_c_π(x) = f_c(x, π(x)) - constraint satisfaction probability
@@ -239,7 +240,7 @@ fn get_time_slice<B: Backend>(tensor: &Tensor<B, 3>, t: usize) -> Tensor<B, 2> {
     
     tensor.clone()
         .slice([0..s, 0..s, t..(t + 1)])
-        .squeeze(2)
+        .squeeze::<2>()  // Output is 2D tensor [S, S]
 }
 
 /// Set a 2D time slice in a 3D STOK tensor.
@@ -343,10 +344,10 @@ mod tests {
     use super::*;
     use crate::backend::{DefaultBackend, default_device};
     use crate::mdp::TaskMDP;
-    use crate::solver::bellman::bellman_backup_kappa;
+    use crate::solver::bellman::{bellman_backup_kappa, bellman_backup_kappa_with_tiebreak};
     use crate::utils::approx_eq;
 
-    /// Run feasibility iteration to convergence and return (κ, π)
+    /// Run feasibility iteration to convergence with proper tie-breaking.
     fn run_to_convergence<B: Backend>(
         mdp: &TaskMDP<B>,
     ) -> (Tensor<B, 1>, Tensor<B, 1, Int>) {
@@ -356,13 +357,29 @@ mod tests {
         let mut kappa: Tensor<B, 1> = Tensor::zeros([s], &device);
         let mut policy: Tensor<B, 1, Int> = Tensor::zeros([s], &device);
         
-        for _ in 0..50 {
+        let epsilon = 1e-6;
+        let max_iter = 100;
+        
+        for iter in 0..max_iter {
+            let kappa_old = kappa.clone();
             let (kappa_new, policy_new) = bellman_backup_kappa(&kappa, mdp);
             kappa = kappa_new;
             policy = policy_new;
+            
+            // Check convergence
+            let diff = (kappa.clone() - kappa_old).abs();
+            let delta: f32 = diff.max().into_scalar().elem();
+            
+            if delta < epsilon {
+                // Converged - re-extract policy with tie-breaking
+                let (_, policy_final) = bellman_backup_kappa_with_tiebreak(&kappa, mdp, 1e-6);
+                return (kappa, policy_final);
+            }
         }
         
-        (kappa, policy)
+        // Max iterations - still apply tie-breaking
+        let (_, policy_final) = bellman_backup_kappa_with_tiebreak(&kappa, mdp, 1e-6);
+        (kappa, policy_final)
     }
 
     #[test]

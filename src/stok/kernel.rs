@@ -145,6 +145,39 @@ impl<B: Backend> STOKKernel<B> {
         }
     }
 
+    /// Create STOK kernel from all components.
+    ///
+    /// Used after STOK construction computes η⁺ and η⁻.
+    ///
+    /// # Arguments
+    ///
+    /// * `eta_plus` - Success termination probabilities, shape [S, S, T]
+    /// * `eta_minus` - Failure termination probabilities, shape [S, S, T]
+    /// * `kappa` - Cumulative feasibility, shape [S]
+    /// * `policy` - Optimal policy, shape [S]
+    /// * `dims` - STOK dimensions
+    pub fn from_components(
+        eta_plus: Tensor<B, 3>,
+        eta_minus: Tensor<B, 3>,
+        kappa: Tensor<B, 1>,
+        policy: Tensor<B, 1, Int>,
+        dims: STOKDimensions,
+    ) -> Self {
+        // Debug assertions for dimension validation
+        debug_assert_eq!(eta_plus.dims(), [dims.n_states, dims.n_states, dims.max_time]);
+        debug_assert_eq!(eta_minus.dims(), [dims.n_states, dims.n_states, dims.max_time]);
+        debug_assert_eq!(kappa.dims(), [dims.n_states]);
+        debug_assert_eq!(policy.dims(), [dims.n_states]);
+
+        Self {
+            eta_plus,
+            eta_minus,
+            kappa,
+            policy,
+            dims,
+        }
+    }
+
     /// Create STOK kernel from pre-computed κ and π (without full η tensors).
     ///
     /// Used when `compute_full_stok = false` in feasibility iteration config.

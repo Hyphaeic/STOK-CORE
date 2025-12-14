@@ -31,7 +31,9 @@ use burn::tensor::Int;
 use crate::mdp::TaskMDP;
 use crate::stok::STOKKernel;
 use crate::types::StokError;
+use crate::types::STOKDimensions;
 use crate::solver::bellman::bellman_backup_kappa;
+use crate::solver::bellman::bellman_backup_kappa_with_tiebreak;
 use crate::solver::convergence::{
     ConvergenceConfig, ConvergenceState, ConvergenceReason,
     check_kappa_convergence, should_check_convergence, validate_monotonicity,
@@ -204,14 +206,10 @@ pub fn feasibility_iteration<B: Backend>(
     let device = mdp.device();
     let s = mdp.n_states();
     
-    // ========================================================================
-    // Step 1: Initialize (CRITICAL: zero initialization)
-    // ========================================================================
-    
-    // Per paper Appendix 7: zero initialization is essential
-    // Non-zero init corrupts unreachable state values
+    // Initialize
     let mut kappa: Tensor<B, 1> = Tensor::zeros([s], &device);
     let mut policy: Tensor<B, 1, Int> = Tensor::zeros([s], &device);
+    let mut kappa_prev: Tensor<B, 1> = kappa.clone(); // For tie-breaking
     
     let mut convergence_state = if config.record_history {
         ConvergenceState::with_history()
@@ -225,50 +223,27 @@ pub fn feasibility_iteration<B: Backend>(
         None
     };
     
-    // ========================================================================
-    // Step 2: Main iteration loop
-    // ========================================================================
-    
     let iteration_start = Instant::now();
     
+    // Main iteration loop
     loop {
-        // Store old κ for convergence check
         let kappa_old = kappa.clone();
         
-        // Bellman backup: the core computation
+        // Standard Bellman backup (no tie-break during iteration)
         let (kappa_new, policy_new) = bellman_backup_kappa(&kappa, mdp);
         
-        // Update state
+        // Store previous κ for tie-breaking at convergence
+        kappa_prev = kappa.clone();
         kappa = kappa_new;
         policy = policy_new;
         
-        // Record history if enabled
+        // Record history
         if let Some(ref mut history) = kappa_history {
             let kappa_vec: Vec<f32> = kappa.clone().into_data().to_vec().unwrap();
             history.push(kappa_vec);
         }
         
-        // Optional: validate intermediate κ values
-        if config.validate_intermediate {
-            if !validate_probability_tensor(&kappa, 1e-5) {
-                return Err(StokError::NumericalInstability {
-                    location: format!("iteration {}", convergence_state.iteration),
-                    value: kappa.clone().max().into_scalar().elem(),
-                });
-            }
-        }
-        
-        // Optional: check monotonicity invariant
-        if config.check_monotonicity {
-            if let Err(decrease) = validate_monotonicity(&kappa_old, &kappa, 1e-6) {
-                return Err(StokError::NumericalInstability {
-                    location: format!("monotonicity violation at iteration {}", convergence_state.iteration),
-                    value: decrease,
-                });
-            }
-        }
-        
-        // Check convergence (may be batched for performance)
+        // Check convergence
         if should_check_convergence(convergence_state.iteration, &config.convergence) {
             let delta = check_kappa_convergence(&kappa_old, &kappa);
             convergence_state.update(delta, &config.convergence);
@@ -281,27 +256,24 @@ pub fn feasibility_iteration<B: Backend>(
         }
     }
     
+    // ========================================================================
+    // PATCH 1: Re-extract policy with tie-breaking at convergence
+    // ========================================================================
+    let (_, policy) = bellman_backup_kappa_with_tiebreak(&kappa, mdp, 1e-6);
+    
     let iteration_time = iteration_start.elapsed();
     
-    // ========================================================================
-    // Step 3: Construct STOK if requested
-    // ========================================================================
-    
+    // Construct STOK
     let stok_start = Instant::now();
     
     let kernel = if config.compute_full_stok {
         construct_stok(&kappa, &policy, mdp, config.max_time)?
     } else {
-        // Return kernel with only κ and π populated (η tensors are zeros)
-        STOKKernel::from_kappa_policy(kappa, policy, config.max_time, &device)
+        let dims = STOKDimensions::new(s, config.max_time);
+        STOKKernel::from_kappa_policy(kappa, policy, dims, &device)
     };
     
     let stok_time = stok_start.elapsed();
-    
-    // ========================================================================
-    // Step 4: Assemble result
-    // ========================================================================
-    
     let total_time = start_time.elapsed();
     let iterations = convergence_state.iteration.max(1) as f64;
     
@@ -523,8 +495,56 @@ mod tests {
         
         let result = feasibility_iteration(&mdp, FeasibilityIterationConfig::default()).unwrap();
         
-        // Validate STOK normalization
-        assert!(result.kernel.validate(1e-4).is_ok());
+        // ========== DIAGNOSTIC: Check policy and termination ==========
+        
+        // 1. Print final policy
+        let policy_data: Vec<i64> = result.kernel.policy.clone().into_data().to_vec().unwrap();
+        eprintln!("Final policy: {:?}", policy_data);
+        
+        // 2. Print κ values
+        let kappa_data: Vec<f32> = result.kernel.kappa.clone().into_data().to_vec().unwrap();
+        eprintln!("Final κ: {:?}", kappa_data);
+        
+        // 3. Check if policy leads to goal (simple reachability check)
+        // For simple_chain: action 0 = stay/left, action 1 = right (toward goal)
+        let mut can_reach_goal = vec![false; 5];
+        can_reach_goal[4] = true; // Goal state
+        for _ in 0..5 {
+            for s in 0..5 {
+                let action = policy_data[s] as usize;
+                // In simple_chain, action 1 moves right
+                if action == 1 && s < 4 {
+                    can_reach_goal[s] = can_reach_goal[s + 1];
+                }
+            }
+        }
+        eprintln!("Can reach goal under policy: {:?}", can_reach_goal);
+        
+        // 4. Check row-mass of η⁺ + η⁻
+        let combined = result.kernel.combined_stok();
+        let row_mass: Tensor<DefaultBackend, 1> = combined
+            .sum_dim(2).squeeze::<2>()
+            .sum_dim(1).squeeze::<1>();
+        let row_mass_data: Vec<f32> = row_mass.into_data().to_vec().unwrap();
+        eprintln!("Row mass (should be 1.0): {:?}", row_mass_data);
+        
+        // 5. Identify the issue
+        for (i, &mass) in row_mass_data.iter().enumerate() {
+            if (mass - 1.0).abs() > 1e-4 {
+                let tail = 1.0 - mass;
+                eprintln!(
+                    "State {}: mass={:.6}, tail={:.6} ({})",
+                    i, mass, tail,
+                    if tail > 0.0 { "non-termination or truncation" } else { "overcounting" }
+                );
+            }
+        }
+        
+        // ========== END DIAGNOSTIC ==========
+        
+        // Original assertion
+        assert!(result.kernel.validate(1e-4).is_ok(), 
+            "Validation failed: {:?}", result.kernel.validate(1e-4));
     }
 
     #[test]

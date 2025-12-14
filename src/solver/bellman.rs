@@ -73,7 +73,62 @@ pub fn bellman_backup_kappa<B: Backend>(
     let (kappa_new, policy) = q_values.max_dim_with_indices(1);
     
     // Squeeze from [S, 1] to [S]
-    (kappa_new.squeeze(1), policy.squeeze(1))
+    (kappa_new.squeeze::<1>(), policy.squeeze::<1>())
+}
+
+/// Perform Bellman backup with tie-breaking for policy extraction.
+///
+/// When multiple actions achieve the same Q-value (κ-ties), this function
+/// uses a secondary criterion to select a proper policy.
+///
+/// Tie-break order:
+/// 1. Maximize Q(x,a) = f₁ + f₂ · E[κ]
+/// 2. Maximize f₁(x,a) (prefer immediate goal)
+/// 3. Smallest action index (deterministic)
+///
+/// # Arguments
+/// * `kappa` - Current feasibility estimate, shape [S]
+/// * `mdp` - Task MDP containing P, f₁, f₂
+/// * `tie_tolerance` - Tolerance for considering Q-values equal
+///
+/// # Returns
+/// Tuple of (new_κ, policy) where policy breaks ties properly
+pub fn bellman_backup_kappa_with_tiebreak<B: Backend>(
+    kappa: &Tensor<B, 1>,
+    mdp: &TaskMDP<B>,
+    tie_tolerance: f32,
+) -> (Tensor<B, 1>, Tensor<B, 1, Int>) {
+    let s = mdp.n_states();
+    let a = mdp.n_actions();
+    let device = kappa.device();
+    
+    // Step 1: Compute Q-values (same as before)
+    let p_flat = mdp.transition.clone().reshape([s * a, s]);
+    let kappa_col = kappa.clone().reshape([s, 1]);
+    let expected_kappa = p_flat.matmul(kappa_col).reshape([s, a]);
+    let q_values = mdp.f1.clone() + mdp.f2.clone() * expected_kappa;
+    
+    // Step 2: Get max Q-value per state
+    let q_max = q_values.clone().max_dim(1).squeeze::<1>(); // [S]
+    
+    // Step 3: Create tie mask - actions within tolerance of max
+    let q_max_expanded = q_max.clone().unsqueeze_dim::<2>(1).expand([s, a]); // [S, A]
+    let threshold = q_max_expanded.clone() - tie_tolerance;
+    let tie_mask: Tensor<B, 2> = q_values.clone().greater_equal(threshold).float();
+    
+    // Step 4: Among tied actions, prefer higher f₁ (immediate goal probability)
+    // Set non-tied actions to -inf for secondary selection
+    let neg_inf = -1e10_f32;
+    let neg_inf_tensor: Tensor<B, 2> = Tensor::full([s, a], neg_inf, &device);
+    let f1_masked = mdp.f1.clone() * tie_mask.clone() 
+        + neg_inf_tensor * (Tensor::ones([s, a], &device) - tie_mask);
+    
+    // Step 5: Select policy as argmax of masked f₁ (breaks ties)
+    let (_, policy) = f1_masked.max_dim_with_indices(1);
+    let policy = policy.squeeze::<1>();
+    
+    // Step 6: κ_new is still the max Q-value
+    (q_max, policy)
 }
 
 /// Compute Q-values without performing the max reduction.
@@ -117,16 +172,17 @@ pub fn get_policy_transition<B: Backend>(
     let s = transition.dims()[0];
     let s_next = transition.dims()[2];
     
-    // Expand policy for gathering: [S] -> [S, 1, S_next]
+    // Expand policy for gathering: [S] -> [S, 1, 1] -> [S, 1, S_next]
+    // Must reshape to 3D FIRST, then expand can broadcast the last dim
     let policy_expanded = policy.clone()
-        .reshape([s, 1])
-        .expand([s, 1, s_next]);
+        .reshape([s, 1, 1])        // [S] -> [S, 1, 1]  (add both singleton dims)
+        .expand([s, 1, s_next]);   // [S, 1, 1] -> [S, 1, S_next]  (broadcast last dim)
     
     // Gather along action dimension (dim 1)
     // [S, A, S] gather with [S, 1, S] -> [S, 1, S] -> [S, S]
     transition.clone()
         .gather(1, policy_expanded)
-        .squeeze(1)
+        .squeeze::<2>()
 }
 
 /// Extract values at policy actions: v_π(x) = v(x, π(x))
@@ -149,7 +205,7 @@ pub fn gather_by_policy<B: Backend>(
     // Gather along action dimension and squeeze
     values.clone()
         .gather(1, policy_expanded)
-        .squeeze(1)
+        .squeeze::<1>()
 }
 
 // ============================================================================
@@ -196,7 +252,7 @@ pub fn bellman_backup_policy_tiebreak<B: Backend>(
     
     // Select minimum-time action among optimal
     let (_, policy) = masked_time.min_dim_with_indices(1);
-    policy.squeeze(1)
+    policy.squeeze::<1>()
 }
 
 // ============================================================================

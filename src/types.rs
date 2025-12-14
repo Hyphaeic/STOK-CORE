@@ -391,6 +391,17 @@ pub enum StokError {
         got: Vec<usize>,
     },
 
+    /// Numerical instability detected during computation.
+    ///
+    /// Occurs when values become NaN, infinite, or violate expected bounds
+    /// during iterative computation.
+    NumericalInstability {
+        /// Location/context where instability was detected
+        location: String,
+        /// The problematic value that triggered the error
+        value: f32,
+    },
+
     /// Invalid dimension value.
     ///
     /// Occurs when a dimension parameter is invalid (e.g., zero states).
@@ -460,6 +471,9 @@ impl fmt::Display for StokError {
             }
             Self::InvalidDimension { name, value, reason } => {
                 write!(f, "Invalid dimension '{}' = {}: {}", name, value, reason)
+            }
+            Self::NumericalInstability { location, value } => {
+                write!(f, "Numerical instability at {}: value = {}", location, value)
             }
             Self::InvalidProbability { value, context } => {
                 write!(f, "Invalid probability {} in {}", value, context)
