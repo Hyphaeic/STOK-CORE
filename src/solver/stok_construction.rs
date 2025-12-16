@@ -49,6 +49,7 @@ pub fn construct_stok<B: Backend>(
     policy: &Tensor<B, 1, Int>,
     mdp: &TaskMDP<B>,
     max_time: usize,
+    kappa_threshold: f32,
 ) -> Result<STOKKernel<B>, StokError> {
     let device = mdp.device();
     let s = mdp.n_states();
@@ -94,7 +95,7 @@ pub fn construct_stok<B: Backend>(
     let eta_plus_t0 = compute_eta_plus_boundary(&f1_pi);
     
     // η⁻(x_j, t₀ | x_i) = [𝟙_κ(x_i)(1 - f_c) + 𝟙̄_κ(x_i)] · δ_{ij}
-    let eta_minus_t0 = compute_eta_minus_boundary(&fc_pi, kappa, 0.0);
+    let eta_minus_t0 = compute_eta_minus_boundary(&fc_pi, kappa, kappa_threshold);
     
     // Set t=0 slices
     eta_plus = set_time_slice(eta_plus, &eta_plus_t0, 0);
@@ -367,7 +368,7 @@ mod tests {
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 10, &device);
         
         let (kappa, policy) = run_to_convergence(&mdp);
-        let stok = construct_stok(&kappa, &policy, &mdp, 10).unwrap();
+        let stok = construct_stok(&kappa, &policy, &mdp, 10, 1e-6).unwrap();
         
         assert_eq!(stok.eta_plus.dims(), [5, 5, 10]);
         assert_eq!(stok.eta_minus.dims(), [5, 5, 10]);
@@ -381,7 +382,7 @@ mod tests {
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 15, &device);
         
         let (kappa, policy) = run_to_convergence(&mdp);
-        let stok = construct_stok(&kappa, &policy, &mdp, 15).unwrap();
+        let stok = construct_stok(&kappa, &policy, &mdp, 15, 1e-6).unwrap();
         
         // Validate normalization
         let result = validate_stok_normalization(
@@ -398,7 +399,7 @@ mod tests {
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 15, &device);
         
         let (kappa, policy) = run_to_convergence(&mdp);
-        let stok = construct_stok(&kappa, &policy, &mdp, 15).unwrap();
+        let stok = construct_stok(&kappa, &policy, &mdp, 15, 1e-6).unwrap();
         
         // Validate κ-η consistency
         let result = validate_kappa_eta_consistency(
@@ -415,7 +416,7 @@ mod tests {
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(3, 5, &device);
         
         let (kappa, policy) = run_to_convergence(&mdp);
-        let stok = construct_stok(&kappa, &policy, &mdp, 5).unwrap();
+        let stok = construct_stok(&kappa, &policy, &mdp, 5, 1e-6).unwrap();
         
         // At t=0, η⁺ should be diagonal
         let eta_plus_t0 = get_time_slice(&stok.eta_plus, 0);
@@ -439,7 +440,7 @@ mod tests {
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::constrained_chain(3, 1, 5, &device);
         
         let (kappa, policy) = run_to_convergence(&mdp);
-        let stok = construct_stok(&kappa, &policy, &mdp, 5).unwrap();
+        let stok = construct_stok(&kappa, &policy, &mdp, 5, 1e-6).unwrap();
         
         // States 0 and 1 should have all mass in η⁻ (infeasible)
         // State 2 (goal) should have all mass in η⁺

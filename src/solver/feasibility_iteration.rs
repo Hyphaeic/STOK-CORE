@@ -261,7 +261,14 @@ pub fn feasibility_iteration<B: Backend>(
     // Stage B (π-OKBE): refine π among κ*-optimal actions to minimize time/suspension.
     // This avoids κ-tie policies that create non-absorbing chains (normalization failures).
     // ========================================================================
-    let policy = extract_pi_time_minimizing(&kappa, mdp, 1e-6, 1e-6, 50, 2048);
+        let eps = config.convergence.epsilon.max(1e-6);
+        let policy = extract_pi_time_minimizing(&kappa, mdp, eps, eps, 50, 2048);
+    
+        // Fail-fast diagnostic: STOK normalization assumes the induced process is absorbing
+        // (no closed recurrent class in the non-terminated dynamics). Debug-only to avoid overhead.
+        if cfg!(debug_assertions) {
+            check_policy_absorption(mdp, &policy, 1e-8, 1e-8)?;
+        }
     
     let iteration_time = iteration_start.elapsed();
     
@@ -269,7 +276,7 @@ pub fn feasibility_iteration<B: Backend>(
     let stok_start = Instant::now();
     
     let kernel = if config.compute_full_stok {
-        construct_stok(&kappa, &policy, mdp, config.max_time)?
+        construct_stok(&kappa, &policy, mdp, config.max_time, eps)?
     } else {
         let dims = STOKDimensions::new(s, config.max_time);
         STOKKernel::from_kappa_policy(kappa, policy, dims, &device)
@@ -318,6 +325,139 @@ pub fn compute_kappa<B: Backend>(
     let result = feasibility_iteration(mdp, config)?;
     Ok((result.kernel.kappa, result.kernel.policy))
 }
+
+fn check_policy_absorption<B: Backend>(
+        mdp: &TaskMDP<B>,
+        policy: &Tensor<B, 1, Int>,
+        prob_epsilon: f32,
+        termination_epsilon: f32,
+    ) -> Result<(), StokError> {
+        let s = mdp.n_states();
+    
+        // Policy-conditioned transition and continuation probability.
+        let p_pi = get_policy_transition(&mdp.transition, policy); // [S,S]
+        let f2_pi = gather_by_policy(&mdp.f2, policy);            // [S]
+    
+        let p: Vec<f32> = p_pi.into_data().to_vec().unwrap();
+        let f2: Vec<f32> = f2_pi.into_data().to_vec().unwrap();
+    
+        // Build adjacency on support of P_π (termination handled separately via f₂).
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); s];
+        for i in 0..s {
+            let row = &p[i * s..(i + 1) * s];
+            for (j, &prob) in row.iter().enumerate() {
+                if prob > prob_epsilon {
+                    adj[i].push(j);
+                }
+            }
+        }
+    
+        // Tarjan SCC to find closed recurrent classes under P_π support.
+        let mut index: i32 = 0;
+        let mut stack: Vec<usize> = Vec::new();
+        let mut on_stack: Vec<bool> = vec![false; s];
+        let mut indices: Vec<i32> = vec![-1; s];
+        let mut lowlink: Vec<i32> = vec![0; s];
+        let mut sccs: Vec<Vec<usize>> = Vec::new();
+    
+        fn strongconnect(
+            v: usize,
+            index: &mut i32,
+            stack: &mut Vec<usize>,
+            on_stack: &mut Vec<bool>,
+            indices: &mut Vec<i32>,
+            lowlink: &mut Vec<i32>,
+            adj: &Vec<Vec<usize>>,
+            sccs: &mut Vec<Vec<usize>>,
+        ) {
+            indices[v] = *index;
+            lowlink[v] = *index;
+            *index += 1;
+            stack.push(v);
+            on_stack[v] = true;
+    
+            for &w in &adj[v] {
+                if indices[w] == -1 {
+                    strongconnect(w, index, stack, on_stack, indices, lowlink, adj, sccs);
+                    lowlink[v] = lowlink[v].min(lowlink[w]);
+                } else if on_stack[w] {
+                    lowlink[v] = lowlink[v].min(indices[w]);
+                }
+            }
+    
+            if lowlink[v] == indices[v] {
+                let mut comp: Vec<usize> = Vec::new();
+                loop {
+                    let w = stack.pop().unwrap();
+                    on_stack[w] = false;
+                    comp.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                sccs.push(comp);
+            }
+        }
+    
+        for v in 0..s {
+            if indices[v] == -1 {
+                strongconnect(
+                    v,
+                    &mut index,
+                    &mut stack,
+                    &mut on_stack,
+                    &mut indices,
+                    &mut lowlink,
+                    &adj,
+                    &mut sccs,
+                );
+            }
+        }
+    
+        // Bad class for STOK normalization:
+        // - closed under P_π support (no outgoing edges), AND
+        // - effectively never terminates in the class (f₂ ≈ 1 everywhere).
+        for comp in sccs {
+            let mut in_comp = vec![false; s];
+            for &v in &comp {
+                in_comp[v] = true;
+            }
+    
+            let mut has_outgoing = false;
+            for &v in &comp {
+                for &w in &adj[v] {
+                    if !in_comp[w] {
+                        has_outgoing = true;
+                        break;
+                    }
+                }
+                if has_outgoing {
+                    break;
+                }
+            }
+    
+            if !has_outgoing {
+                let all_never_terminate = comp
+                    .iter()
+                    .all(|&v| f2[v] >= 1.0 - termination_epsilon);
+    
+                if all_never_terminate {
+                    return Err(StokError::InvalidProbability {
+                        value: 1.0,
+                        context: format!(
+                            "Non-absorbing policy-induced closed class in nonterminal dynamics (|C|={}): states {:?}. \
+    This violates the absorbing/transience assumption required for STOK normalization.",
+                            comp.len(),
+                            comp
+                        ),
+                    });
+                }
+            }
+        }
+    
+        Ok(())
+    }
+    
 
 // ============================================================================
 // Validation Utilities

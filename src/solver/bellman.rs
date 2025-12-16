@@ -228,7 +228,7 @@ pub fn gather_by_policy<B: Backend>(
 ///
 /// # Note
 /// For MVP, this can be skipped - just use argmax from κ-OKBE.
-#[allow(dead_code)]
+#[deprecated(note = "Legacy: this is NOT Ringström π**. Do not use for policy extraction; use feasibility_iteration’s π-OKBE (time-min over κ-optimal actions).")]
 pub fn bellman_backup_policy_tiebreak<B: Backend>(
     q_values: &Tensor<B, 2>,
     kappa_max: &Tensor<B, 1>,
