@@ -32,8 +32,12 @@ use crate::mdp::TaskMDP;
 use crate::stok::STOKKernel;
 use crate::types::StokError;
 use crate::types::STOKDimensions;
-use crate::solver::bellman::bellman_backup_kappa;
-use crate::solver::bellman::bellman_backup_kappa_with_tiebreak;
+use crate::solver::bellman::{
+    bellman_backup_kappa,
+    compute_q_values,
+    get_policy_transition,
+    gather_by_policy,
+};
 use crate::solver::convergence::{
     ConvergenceConfig, ConvergenceState, ConvergenceReason,
     check_kappa_convergence, should_check_convergence, validate_monotonicity,
@@ -209,7 +213,6 @@ pub fn feasibility_iteration<B: Backend>(
     // Initialize
     let mut kappa: Tensor<B, 1> = Tensor::zeros([s], &device);
     let mut policy: Tensor<B, 1, Int> = Tensor::zeros([s], &device);
-    let mut kappa_prev: Tensor<B, 1> = kappa.clone(); // For tie-breaking
     
     let mut convergence_state = if config.record_history {
         ConvergenceState::with_history()
@@ -232,8 +235,6 @@ pub fn feasibility_iteration<B: Backend>(
         // Standard Bellman backup (no tie-break during iteration)
         let (kappa_new, policy_new) = bellman_backup_kappa(&kappa, mdp);
         
-        // Store previous κ for tie-breaking at convergence
-        kappa_prev = kappa.clone();
         kappa = kappa_new;
         policy = policy_new;
         
@@ -257,9 +258,10 @@ pub fn feasibility_iteration<B: Backend>(
     }
     
     // ========================================================================
-    // PATCH 1: Re-extract policy with tie-breaking at convergence
+    // Stage B (π-OKBE): refine π among κ*-optimal actions to minimize time/suspension.
+    // This avoids κ-tie policies that create non-absorbing chains (normalization failures).
     // ========================================================================
-    let (_, policy) = bellman_backup_kappa_with_tiebreak(&kappa, mdp, 1e-6);
+    let policy = extract_pi_time_minimizing(&kappa, mdp, 1e-6, 1e-6, 50, 2048);
     
     let iteration_time = iteration_start.elapsed();
     
@@ -337,6 +339,134 @@ fn validate_kappa_bounds<B: Backend>(kappa: &Tensor<B, 1>) -> Result<(), StokErr
 // ============================================================================
 // Tests
 // ============================================================================
+
+
+
+// ============================================================================
+// π-OKBE policy refinement (time / suspension minimization among κ*-optimal actions)
+// ============================================================================
+
+/// Refine π among κ*-optimal actions by minimizing expected continuation time.
+///
+/// This is the practical MVP version of the paper’s “minimize expected time” step
+/// in feasibility iteration (κ-OKBE then π-OKBE).
+///
+/// We do a lightweight policy-iteration loop:
+/// 1) Fix π, solve ν from: ν(x) = 1 + f₂(x,π(x)) · E[ν(x′)]
+/// 2) Improve π(x) = argmin_{a ∈ A*_x} f₂(x,a) · E[ν(x′)]
+fn extract_pi_time_minimizing<B: Backend>(
+    kappa_star: &Tensor<B, 1>,
+    mdp: &TaskMDP<B>,
+    tie_tolerance: f32,
+    nu_epsilon: f32,
+    max_policy_iters: usize,
+    max_nu_iters: usize,
+) -> Tensor<B, 1, Int> {
+    let device = mdp.device();
+    let s = mdp.n_states();
+    let a = mdp.n_actions();
+
+    // Qκ(x,a) = f1 + f2 · E[κ*]
+    let q_values = compute_q_values(kappa_star, mdp);
+
+    // Start from a deterministic κ-greedy policy
+    let (_, init_policy) = q_values.clone().max_dim_with_indices(1);
+    let mut policy: Tensor<B, 1, Int> = init_policy.squeeze::<1>();
+
+    for _ in 0..max_policy_iters {
+        let nu = solve_nu_for_policy(mdp, &policy, nu_epsilon, max_nu_iters);
+
+        // expected_nu(x,a) = E_{x'~P}[nu(x')]
+        let p_flat = mdp.transition.clone().reshape([s * a, s]);
+        let nu_col = nu.clone().reshape([s, 1]);
+        let expected_nu = p_flat.matmul(nu_col).reshape([s, a]);
+
+        // time_proxy(x,a) = f2(x,a) · E[nu(x')]
+        let time_proxy = mdp.f2.clone() * expected_nu;
+
+        let policy_new = argmin_time_among_kappa_optimal(
+            &q_values,
+            kappa_star,
+            &time_proxy,
+            tie_tolerance,
+            &device,
+        );
+
+        // Stop if stable
+        let old_vec: Vec<i32> = policy.clone().into_data().to_vec().unwrap();
+        let new_vec: Vec<i32> = policy_new.clone().into_data().to_vec().unwrap();
+        if old_vec == new_vec {
+            return policy_new;
+        }
+
+        policy = policy_new;
+    }
+
+    policy
+}
+
+/// Solve ν for a fixed policy π:
+/// ν(x) = 1 + f₂(x,π(x)) · E_{x'~P_π}[ν(x′)]
+fn solve_nu_for_policy<B: Backend>(
+    mdp: &TaskMDP<B>,
+    policy: &Tensor<B, 1, Int>,
+    epsilon: f32,
+    max_iters: usize,
+) -> Tensor<B, 1> {
+    let device = mdp.device();
+    let s = mdp.n_states();
+
+    let p_pi = get_policy_transition(&mdp.transition, policy); // [S,S]
+    let f2_pi = gather_by_policy(&mdp.f2, policy);            // [S]
+    let ones: Tensor<B, 1> = Tensor::ones([s], &device);
+
+    let mut nu: Tensor<B, 1> = Tensor::zeros([s], &device);
+
+    for _ in 0..max_iters {
+        let nu_col = nu.clone().reshape([s, 1]);
+        let expected = p_pi.clone().matmul(nu_col).squeeze::<1>(); // [S]
+        let nu_new = ones.clone() + f2_pi.clone() * expected;
+
+        let diff = (nu_new.clone() - nu.clone()).abs();
+        let delta: f32 = diff.max().into_scalar().elem();
+
+        nu = nu_new;
+        if delta < epsilon {
+            break;
+        }
+    }
+
+    nu
+}
+
+/// Select π(x) = argmin time_proxy(x,a) over κ*-optimal actions A*_x.
+fn argmin_time_among_kappa_optimal<B: Backend>(
+    q_values: &Tensor<B, 2>,
+    kappa_star: &Tensor<B, 1>,
+    time_proxy: &Tensor<B, 2>,
+    tie_tolerance: f32,
+    device: &B::Device,
+) -> Tensor<B, 1, Int> {
+    let s = q_values.dims()[0];
+    let a = q_values.dims()[1];
+
+    // A*_x mask: Qκ(x,a) >= κ*(x) - eps
+    let kappa_expanded = kappa_star.clone().unsqueeze_dim::<2>(1).expand([s, a]);
+    let threshold = kappa_expanded - tie_tolerance;
+    let optimal_mask = q_values.clone().greater_equal(threshold);
+    let optimal_mask_f: Tensor<B, 2> = optimal_mask.float();
+
+    // Non-optimal actions get huge time so they are never selected by min
+    let large_value: f32 = 1e10;
+    let large_tensor: Tensor<B, 2> = Tensor::full([s, a], large_value, device);
+    let ones: Tensor<B, 2> = Tensor::ones([s, a], device);
+
+    let masked_time = time_proxy.clone() * optimal_mask_f.clone()
+        + large_tensor * (ones - optimal_mask_f);
+
+    let (_, policy) = masked_time.min_dim_with_indices(1);
+    policy.squeeze::<1>()
+}
 
 #[cfg(test)]
 mod tests {
@@ -498,7 +628,7 @@ mod tests {
         // ========== DIAGNOSTIC: Check policy and termination ==========
         
         // 1. Print final policy
-        let policy_data: Vec<i64> = result.kernel.policy.clone().into_data().to_vec().unwrap();
+        let policy_data: Vec<i32> = result.kernel.policy.clone().into_data().to_vec().unwrap();
         eprintln!("Final policy: {:?}", policy_data);
         
         // 2. Print κ values

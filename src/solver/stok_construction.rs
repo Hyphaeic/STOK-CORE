@@ -344,42 +344,21 @@ mod tests {
     use super::*;
     use crate::backend::{DefaultBackend, default_device};
     use crate::mdp::TaskMDP;
-    use crate::solver::bellman::{bellman_backup_kappa, bellman_backup_kappa_with_tiebreak};
+    use crate::solver::feasibility_iteration::{feasibility_iteration, FeasibilityIterationConfig};
     use crate::utils::approx_eq;
 
-    /// Run feasibility iteration to convergence with proper tie-breaking.
+    /// Run feasibility iteration to convergence (κ-OKBE then π-OKBE).
     fn run_to_convergence<B: Backend>(
         mdp: &TaskMDP<B>,
     ) -> (Tensor<B, 1>, Tensor<B, 1, Int>) {
-        let device = mdp.device();
-        let s = mdp.n_states();
-        
-        let mut kappa: Tensor<B, 1> = Tensor::zeros([s], &device);
-        let mut policy: Tensor<B, 1, Int> = Tensor::zeros([s], &device);
-        
-        let epsilon = 1e-6;
-        let max_iter = 100;
-        
-        for iter in 0..max_iter {
-            let kappa_old = kappa.clone();
-            let (kappa_new, policy_new) = bellman_backup_kappa(&kappa, mdp);
-            kappa = kappa_new;
-            policy = policy_new;
-            
-            // Check convergence
-            let diff = (kappa.clone() - kappa_old).abs();
-            let delta: f32 = diff.max().into_scalar().elem();
-            
-            if delta < epsilon {
-                // Converged - re-extract policy with tie-breaking
-                let (_, policy_final) = bellman_backup_kappa_with_tiebreak(&kappa, mdp, 1e-6);
-                return (kappa, policy_final);
-            }
-        }
-        
-        // Max iterations - still apply tie-breaking
-        let (_, policy_final) = bellman_backup_kappa_with_tiebreak(&kappa, mdp, 1e-6);
-        (kappa, policy_final)
+        // Use the main solver so tests match the paper-aligned implementation.
+        let config = FeasibilityIterationConfig {
+            compute_full_stok: false,
+            ..Default::default()
+        };
+
+        let result = feasibility_iteration(mdp, config).unwrap();
+        (result.kernel.kappa.clone(), result.kernel.policy.clone())
     }
 
     #[test]

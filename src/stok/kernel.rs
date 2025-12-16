@@ -428,7 +428,7 @@ impl<B: Backend> STOKKernel<B> {
             eta_plus: self.eta_plus.clone().into_data().to_vec().unwrap(),
             eta_minus: self.eta_minus.clone().into_data().to_vec().unwrap(),
             kappa: self.kappa.clone().into_data().to_vec().unwrap(),
-            policy: self.policy.clone().into_data().to_vec().unwrap(),
+            policy: self.policy.clone().into_data().to_vec::<i32>().unwrap(),
             dims: self.dims,
         }
     }

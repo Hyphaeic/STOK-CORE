@@ -313,6 +313,8 @@ mod tests {
     use crate::backend::{DefaultBackend, default_device};
     use crate::mdp::TaskMDP;
     use crate::utils::approx_eq;
+    use burn::backend::Wgpu;
+    type TestBackend = Wgpu;
 
     #[test]
     fn test_bellman_backup_shapes() {
@@ -432,20 +434,28 @@ mod tests {
         assert!(approx_eq(gathered_data[1], 3.0, 1e-6));
         assert!(approx_eq(gathered_data[2], 6.0, 1e-6));
     }
-
     #[test]
     fn test_policy_validity() {
         let device = default_device();
-        let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 10, &device);
-        let kappa: Tensor<DefaultBackend, 1> = Tensor::zeros([5], &device);
+        let mdp: TaskMDP<TestBackend> = TaskMDP::simple_chain(5, 20, &device);
         
+        // Initialize κ to zeros
+        let kappa = Tensor::zeros([mdp.n_states()], &device);
+        
+        // Run one Bellman backup
         let (_, policy) = bellman_backup_kappa(&kappa, &mdp);
-        let policy_data: Vec<i64> = policy.into_data().to_vec().unwrap();
         
-        let n_actions = mdp.n_actions() as i64;
-        for (i, &a) in policy_data.iter().enumerate() {
-            assert!(a >= 0 && a < n_actions,
-                "State {} has invalid action {}, should be in [0, {})", i, a, n_actions);
+        // FIXED: Use i32 instead of i64
+        let policy_data: Vec<i32> = policy.into_data().to_vec().unwrap();
+        let n_actions = mdp.n_actions() as i32;  // FIXED: cast to i32
+        
+        // All policy indices should be valid (in range [0, n_actions))
+        for (state, &action) in policy_data.iter().enumerate() {
+            assert!(
+                action >= 0 && action < n_actions,
+                "Invalid policy at state {}: action {} not in [0, {})",
+                state, action, n_actions
+            );
         }
     }
 }
