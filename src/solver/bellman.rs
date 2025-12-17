@@ -228,7 +228,13 @@ pub fn gather_by_policy<B: Backend>(
 ///
 /// # Note
 /// For MVP, this can be skipped - just use argmax from κ-OKBE.
-#[deprecated(note = "Legacy: this is NOT Ringström π**. Do not use for policy extraction; use feasibility_iteration’s π-OKBE (time-min over κ-optimal actions).")]
+#[deprecated(
+    since = "0.2.0",
+    note = "NON-RINGSTRÖM TIE-BREAK: Uses f1-max instead of time-minimization. \
+            This is NOT π** and violates Phase 2 alignment. \
+            Use extract_pi_time_minimizing (internal) via feasibility_iteration instead."
+)]
+#[cfg(test)] 
 pub fn bellman_backup_policy_tiebreak<B: Backend>(
     q_values: &Tensor<B, 2>,
     kappa_max: &Tensor<B, 1>,

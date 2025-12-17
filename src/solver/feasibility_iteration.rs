@@ -263,12 +263,10 @@ pub fn feasibility_iteration<B: Backend>(
     // ========================================================================
         let eps = config.convergence.epsilon.max(1e-6);
         let policy = extract_pi_time_minimizing(&kappa, mdp, eps, eps, 50, 2048);
-    
-        // Fail-fast diagnostic: STOK normalization assumes the induced process is absorbing
-        // (no closed recurrent class in the non-terminated dynamics). Debug-only to avoid overhead.
-        if cfg!(debug_assertions) {
-            check_policy_absorption(mdp, &policy, 1e-8, 1e-8)?;
-        }
+
+        // Fail-fast: STOK normalization requires absorbing/transient nonterminal dynamics.
+        // Two-tier check: fast screen (always), SCC fallback (when risky).
+        check_policy_absorption_release(mdp, &policy, eps)?;
     
     let iteration_time = iteration_start.elapsed();
     
@@ -459,6 +457,66 @@ fn check_policy_absorption<B: Backend>(
     }
     
 
+  /// Release-safe absorption/transience guard with two-tier checking.
+///
+/// Tier 1 (always run): Cheap screen based on min termination probability.
+/// Tier 2 (risky only): Full SCC analysis to detect closed recurrent classes.
+///
+/// # Arguments
+/// * `prob_epsilon` - Threshold for non-zero transition (default: 1e-8)
+/// * `termination_delta` - Threshold for "effectively terminates" (default: 1e-6)
+fn check_policy_absorption_release<B: Backend>(
+    mdp: &TaskMDP<B>,
+    policy: &Tensor<B, 1, Int>,
+    epsilon: f32,
+) -> Result<(), StokError> {
+    let prob_eps = 1e-8_f32.max(epsilon * 0.01);
+    let term_delta = 1e-6_f32.max(epsilon);
+    
+    // Tier 1: Fast screen
+    let risk = absorption_screen_fast(mdp, policy, term_delta);
+    
+    match risk {
+        AbsorptionRisk::Safe => Ok(()),
+        AbsorptionRisk::Risky => {
+            // Tier 2: Full SCC analysis
+            check_policy_absorption(mdp, policy, prob_eps, term_delta)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AbsorptionRisk {
+    Safe,   // All states have sufficient termination probability
+    Risky,  // Requires SCC analysis
+}
+
+/// Tier 1: Cheap absorption screen.
+///
+/// Computes min termination probability across all states.
+/// If min(1 - f2_π) >= delta, the process is guaranteed absorbing.
+fn absorption_screen_fast<B: Backend>(
+    mdp: &TaskMDP<B>,
+    policy: &Tensor<B, 1, Int>,
+    termination_delta: f32,
+) -> AbsorptionRisk {
+    let f2_pi = gather_by_policy(&mdp.f2, policy);
+    let device = f2_pi.device();
+    let s = mdp.n_states();
+    
+    // Termination probability: 1 - f2_π(x)
+    let ones: Tensor<B, 1> = Tensor::ones([s], &device);
+    let term_prob = ones - f2_pi;
+    
+    // Min termination probability
+    let min_term: f32 = term_prob.min().into_scalar().elem();
+    
+    if min_term >= termination_delta {
+        AbsorptionRisk::Safe
+    } else {
+        AbsorptionRisk::Risky
+    }
+} 
 // ============================================================================
 // Validation Utilities
 // ============================================================================
