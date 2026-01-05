@@ -103,11 +103,14 @@
 //! | [19] | SOK composition (matrix multiplication) |
 
 // Module declarations
-pub mod types;
 pub mod backend;
+pub mod composition;
 pub mod mdp;
-pub mod stok;
+pub mod planning;
+pub mod prediction;
 pub mod solver;
+pub mod stok;
+pub mod types;
 pub mod utils;
 
 /// Common imports for STOK usage.
@@ -125,20 +128,16 @@ pub mod utils;
 /// ```
 pub mod prelude {
     pub use crate::types::{
-        StateIdx, ActionIdx, TimeIdx, GoalId,
-        MDPDimensions, STOKDimensions, StokError,
-        DEFAULT_CONVERGENCE_TOLERANCE,
-        DEFAULT_PROBABILITY_TOLERANCE,
+        ActionIdx, GoalId, MDPDimensions, STOKDimensions, StateIdx, StokError, TimeIdx,
+        DEFAULT_CONVERGENCE_TOLERANCE, DEFAULT_PROBABILITY_TOLERANCE,
     };
-    
+
     pub use crate::backend::{
-        DefaultBackend, DefaultDevice,
-        DeviceConfig, DeviceManager,
-        default_device, cpu_device,
+        cpu_device, default_device, DefaultBackend, DefaultDevice, DeviceConfig, DeviceManager,
     };
-    
+
     pub use crate::mdp::TaskMDP;
-    pub use crate::stok::{STOKKernel, STOKData};
+    pub use crate::stok::{STOKData, STOKKernel};
 }
 
 // Top-level re-exports
@@ -156,13 +155,13 @@ mod integration_tests {
     #[test]
     fn test_mdp_workflow() {
         let device = default_device();
-        
+
         // Create MDP
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(10, 20, &device);
-        
+
         // Validate
         assert!(mdp.validate().is_ok());
-        
+
         // Check dimensions
         assert_eq!(mdp.n_states(), 10);
         assert_eq!(mdp.n_actions(), 3);
@@ -173,14 +172,14 @@ mod integration_tests {
     #[test]
     fn test_kernel_workflow() {
         let device = default_device();
-        
+
         // Create kernel
         let kernel: STOKKernel<DefaultBackend> = STOKKernel::new(10, 20, &device);
-        
+
         // Check dimensions
         assert_eq!(kernel.n_states(), 10);
         assert_eq!(kernel.max_time(), 20);
-        
+
         // Zero-initialized kernel should pass bounds check
         assert!(kernel.validate_probability_bounds().is_ok());
     }
@@ -189,18 +188,15 @@ mod integration_tests {
     #[test]
     fn test_constrained_mdp() {
         let device = default_device();
-        
+
         // Fire state at position 5
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::constrained_chain(10, 5, 20, &device);
-        
+
         assert!(mdp.validate().is_ok());
-        
+
         // Check that fire state has f_c = 0
-        let constraint_data: Vec<f32> = mdp.constraint_fn.clone()
-            .into_data()
-            .to_vec()
-            .unwrap();
-        
+        let constraint_data: Vec<f32> = mdp.constraint_fn.clone().into_data().to_vec().unwrap();
+
         for a in 0..3 {
             assert_eq!(constraint_data[5 * 3 + a], 0.0);
         }
@@ -210,9 +206,9 @@ mod integration_tests {
     #[test]
     fn test_stochastic_mdp() {
         let device = default_device();
-        
+
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::stochastic_chain(10, 0.8, 20, &device);
-        
+
         // Should be properly normalized
         assert!(mdp.validate_stochastic(1e-5).is_ok());
         assert!(mdp.validate().is_ok());
@@ -222,24 +218,24 @@ mod integration_tests {
     #[test]
     fn test_derived_functions() {
         let device = default_device();
-        
+
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 10, &device);
-        
+
         // At non-goal states: f_g = 0, f_c = 1
         // So f_1 = 0, f_2 = 1
-        
+
         // At goal state (4): f_g = 1, f_c = 1
         // So f_1 = 1, f_2 = 0
-        
+
         let f1_data: Vec<f32> = mdp.f1.clone().into_data().to_vec().unwrap();
         let f2_data: Vec<f32> = mdp.f2.clone().into_data().to_vec().unwrap();
-        
+
         // Check goal state
         for a in 0..3 {
             assert_eq!(f1_data[4 * 3 + a], 1.0);
             assert_eq!(f2_data[4 * 3 + a], 0.0);
         }
-        
+
         // Check non-goal state
         for a in 0..3 {
             assert_eq!(f1_data[0 * 3 + a], 0.0);
@@ -249,10 +245,22 @@ mod integration_tests {
 }
 // Phase 2 re-exports
 pub use solver::{
-    feasibility_iteration,
-    solve_task_mdp,
-    FeasibilityIterationConfig,
-    FeasibilityIterationResult,
-    ConvergenceConfig,
-    ConvergenceState,
+    feasibility_iteration, solve_task_mdp, ConvergenceConfig, ConvergenceState,
+    FeasibilityIterationConfig, FeasibilityIterationResult,
 };
+
+// Phase 3 re-exports
+pub use composition::{
+    compose_sequence, compose_sok_sequence, compose_soks, compose_stoks,
+    compose_stoks_with_decomposition, composed_time_horizon, ComposedSTOK, OptionSequence,
+    StateOptionKernel,
+};
+
+// Phase 4 re-exports
+pub use planning::{
+    best_first_search, tree_search, GoalInfo, GoalKernel, Plan, PlanError, PlanningQuery,
+    STOKSampler, SearchResult, SearchStats, SearchStrategy, SimulatedTrajectory,
+    SimulationResult, TerminationOutcome, TreeSearchConfig, sample_categorical, simulate_plan,
+};
+
+pub use prediction::{CumulativeEventFunction, StatePredictionKernel, TemporalEventFunction};

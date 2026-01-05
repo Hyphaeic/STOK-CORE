@@ -22,8 +22,8 @@
 //!
 //! Ringstrom, T., & Schrater, P. (2025). Section 2: "Options Kernels and OKBEs"
 
-use burn::prelude::*;
 use crate::types::{MDPDimensions, StokError, DEFAULT_PROBABILITY_TOLERANCE};
+use burn::prelude::*;
 
 /// Task MDP with goal and constraint functions.
 ///
@@ -210,7 +210,9 @@ impl<B: Backend> TaskMDP<B> {
         // Note: Using reshape instead of squeeze to handle n_states=1 edge case
         let n_states = self.dims.n_states;
         let n_actions = self.dims.n_actions;
-        let row_sums: Tensor<B, 2> = self.transition.clone()
+        let row_sums: Tensor<B, 2> = self
+            .transition
+            .clone()
             .sum_dim(2)
             .reshape([n_states, n_actions]);
         let device = row_sums.device();
@@ -309,19 +311,17 @@ impl<B: Backend> TaskMDP<B> {
         for x in 0..n_states {
             for a in 0..n_actions {
                 let x_next = match a {
-                    0 => x.saturating_sub(1),           // left
-                    1 => (x + 1).min(n_states - 1),    // right
-                    _ => x,                             // stay
+                    0 => x.saturating_sub(1),       // left
+                    1 => (x + 1).min(n_states - 1), // right
+                    _ => x,                         // stay
                 };
                 let idx = x * n_actions * n_states + a * n_states + x_next;
                 trans_data[idx] = 1.0;
             }
         }
 
-        let transition: Tensor<B, 3> = Tensor::<B, 1>::from_floats(
-            trans_data.as_slice(),
-            device,
-        ).reshape([n_states, n_actions, n_states]);
+        let transition: Tensor<B, 3> = Tensor::<B, 1>::from_floats(trans_data.as_slice(), device)
+            .reshape([n_states, n_actions, n_states]);
 
         // Goal: only at final state (f_g = 1.0 at state n-1)
         let mut goal_data = vec![0.0f32; n_states * n_actions];
@@ -361,7 +361,7 @@ impl<B: Backend> TaskMDP<B> {
         device: &B::Device,
     ) -> Self {
         assert!(fire_state < n_states, "fire_state must be < n_states");
-        
+
         let n_actions = 3;
 
         // Start with simple chain
@@ -372,10 +372,9 @@ impl<B: Backend> TaskMDP<B> {
         for a in 0..n_actions {
             constraint_data[fire_state * n_actions + a] = 0.0;
         }
-        let constraint_fn: Tensor<B, 2> = Tensor::<B, 1>::from_floats(
-            constraint_data.as_slice(),
-            device,
-        ).reshape([n_states, n_actions]);
+        let constraint_fn: Tensor<B, 2> =
+            Tensor::<B, 1>::from_floats(constraint_data.as_slice(), device)
+                .reshape([n_states, n_actions]);
 
         Self::new(base.transition, base.goal_fn, constraint_fn, max_time)
             .expect("constrained_chain should produce valid MDP")
@@ -433,10 +432,8 @@ impl<B: Backend> TaskMDP<B> {
             }
         }
 
-        let transition: Tensor<B, 3> = Tensor::<B, 1>::from_floats(
-            trans_data.as_slice(),
-            device,
-        ).reshape([n_states, n_actions, n_states]);
+        let transition: Tensor<B, 3> = Tensor::<B, 1>::from_floats(trans_data.as_slice(), device)
+            .reshape([n_states, n_actions, n_states]);
 
         // Goal: only at final state
         let mut goal_data = vec![0.0f32; n_states * n_actions];
@@ -460,7 +457,7 @@ impl<B: Backend> TaskMDP<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{DefaultBackend, default_device};
+    use crate::backend::{default_device, DefaultBackend};
 
     // ========================================================================
     // Positive Validation Tests (valid MDPs)
@@ -489,11 +486,8 @@ mod tests {
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::constrained_chain(10, 4, 20, &device);
 
         // Extract constraint values at fire state
-        let constraint_data: Vec<f32> = mdp.constraint_fn.clone()
-            .into_data()
-            .to_vec()
-            .unwrap();
-        
+        let constraint_data: Vec<f32> = mdp.constraint_fn.clone().into_data().to_vec().unwrap();
+
         // Fire state (4) should have f_c = 0 for all actions
         for a in 0..3 {
             assert_eq!(constraint_data[4 * 3 + a], 0.0);
@@ -534,22 +528,22 @@ mod tests {
     #[test]
     fn test_invalid_mdp_non_stochastic_transitions() {
         let device = default_device();
-        
+
         // Create transition tensor that doesn't sum to 1
         // All zeros means sum = 0, not 1
         let bad_trans: Tensor<DefaultBackend, 3> = Tensor::zeros([3, 2, 3], &device);
         let goal: Tensor<DefaultBackend, 2> = Tensor::zeros([3, 2], &device);
         let constraint: Tensor<DefaultBackend, 2> = Tensor::ones([3, 2], &device);
-        
+
         let result = TaskMDP::<DefaultBackend>::new(bad_trans, goal, constraint, 10);
         // Should succeed in construction but fail validation
         assert!(result.is_ok());
         let mdp = result.unwrap();
-        
+
         // validate_stochastic should fail
         let validation = mdp.validate_stochastic(1e-5);
         assert!(validation.is_err());
-        
+
         match validation.unwrap_err() {
             StokError::NotNormalized { expected, .. } => {
                 assert_eq!(expected, 1.0);
@@ -561,16 +555,16 @@ mod tests {
     #[test]
     fn test_invalid_mdp_dimension_mismatch_transition() {
         let device = default_device();
-        
+
         // Transition with inconsistent first and third dimensions
         // [3, 2, 4] instead of [3, 2, 3]
         let bad_trans: Tensor<DefaultBackend, 3> = Tensor::zeros([3, 2, 4], &device);
         let goal: Tensor<DefaultBackend, 2> = Tensor::zeros([3, 2], &device);
         let constraint: Tensor<DefaultBackend, 2> = Tensor::ones([3, 2], &device);
-        
+
         let result = TaskMDP::<DefaultBackend>::new(bad_trans, goal, constraint, 10);
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             StokError::DimensionMismatch { expected, got } => {
                 assert_eq!(expected, vec![3, 2, 3]);
@@ -583,15 +577,15 @@ mod tests {
     #[test]
     fn test_invalid_mdp_dimension_mismatch_goal() {
         let device = default_device();
-        
+
         // Goal with wrong shape [4, 2] instead of [3, 2]
         let trans: Tensor<DefaultBackend, 3> = Tensor::zeros([3, 2, 3], &device);
         let bad_goal: Tensor<DefaultBackend, 2> = Tensor::zeros([4, 2], &device);
         let constraint: Tensor<DefaultBackend, 2> = Tensor::ones([3, 2], &device);
-        
+
         let result = TaskMDP::<DefaultBackend>::new(trans, bad_goal, constraint, 10);
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             StokError::DimensionMismatch { expected, got } => {
                 assert_eq!(expected, vec![3, 2]);
@@ -604,15 +598,15 @@ mod tests {
     #[test]
     fn test_invalid_mdp_dimension_mismatch_constraint() {
         let device = default_device();
-        
+
         // Constraint with wrong shape [3, 4] instead of [3, 2]
         let trans: Tensor<DefaultBackend, 3> = Tensor::zeros([3, 2, 3], &device);
         let goal: Tensor<DefaultBackend, 2> = Tensor::zeros([3, 2], &device);
         let bad_constraint: Tensor<DefaultBackend, 2> = Tensor::ones([3, 4], &device);
-        
+
         let result = TaskMDP::<DefaultBackend>::new(trans, goal, bad_constraint, 10);
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             StokError::DimensionMismatch { expected, got } => {
                 assert_eq!(expected, vec![3, 2]);
@@ -625,31 +619,29 @@ mod tests {
     #[test]
     fn test_invalid_mdp_goal_out_of_bounds_negative() {
         let device = default_device();
-        
+
         // Create valid structure but with negative goal values
         let trans_data = vec![1.0f32; 3 * 2 * 3]; // Valid stochastic (uniform)
-        let trans: Tensor<DefaultBackend, 3> = Tensor::<DefaultBackend, 1>::from_floats(
-            trans_data.as_slice(),
-            &device,
-        ).reshape([3, 2, 3]) / 3.0; // Normalize to sum to 1
-        
+        let trans: Tensor<DefaultBackend, 3> =
+            Tensor::<DefaultBackend, 1>::from_floats(trans_data.as_slice(), &device)
+                .reshape([3, 2, 3])
+                / 3.0; // Normalize to sum to 1
+
         // Goal with negative value
         let mut goal_data = vec![0.0f32; 3 * 2];
         goal_data[0] = -0.5; // Invalid!
-        let goal: Tensor<DefaultBackend, 2> = Tensor::<DefaultBackend, 1>::from_floats(
-            goal_data.as_slice(),
-            &device,
-        ).reshape([3, 2]);
-        
+        let goal: Tensor<DefaultBackend, 2> =
+            Tensor::<DefaultBackend, 1>::from_floats(goal_data.as_slice(), &device).reshape([3, 2]);
+
         let constraint: Tensor<DefaultBackend, 2> = Tensor::ones([3, 2], &device);
-        
+
         let result = TaskMDP::<DefaultBackend>::new(trans, goal, constraint, 10);
         assert!(result.is_ok());
-        
+
         let mdp = result.unwrap();
         let validation = mdp.validate_probability_bounds();
         assert!(validation.is_err());
-        
+
         match validation.unwrap_err() {
             StokError::InvalidProbability { value, context } => {
                 assert!(value < 0.0);
@@ -662,27 +654,25 @@ mod tests {
     #[test]
     fn test_invalid_mdp_goal_out_of_bounds_over_one() {
         let device = default_device();
-        
+
         let trans_data = vec![1.0f32; 3 * 2 * 3];
-        let trans: Tensor<DefaultBackend, 3> = Tensor::<DefaultBackend, 1>::from_floats(
-            trans_data.as_slice(),
-            &device,
-        ).reshape([3, 2, 3]) / 3.0;
-        
+        let trans: Tensor<DefaultBackend, 3> =
+            Tensor::<DefaultBackend, 1>::from_floats(trans_data.as_slice(), &device)
+                .reshape([3, 2, 3])
+                / 3.0;
+
         // Goal with value > 1.0
         let mut goal_data = vec![0.5f32; 3 * 2];
         goal_data[0] = 1.5; // Invalid!
-        let goal: Tensor<DefaultBackend, 2> = Tensor::<DefaultBackend, 1>::from_floats(
-            goal_data.as_slice(),
-            &device,
-        ).reshape([3, 2]);
-        
+        let goal: Tensor<DefaultBackend, 2> =
+            Tensor::<DefaultBackend, 1>::from_floats(goal_data.as_slice(), &device).reshape([3, 2]);
+
         let constraint: Tensor<DefaultBackend, 2> = Tensor::ones([3, 2], &device);
-        
+
         let mdp = TaskMDP::<DefaultBackend>::new(trans, goal, constraint, 10).unwrap();
         let validation = mdp.validate_probability_bounds();
         assert!(validation.is_err());
-        
+
         match validation.unwrap_err() {
             StokError::InvalidProbability { value, context } => {
                 assert!(value > 1.0);
@@ -695,27 +685,26 @@ mod tests {
     #[test]
     fn test_invalid_mdp_constraint_out_of_bounds() {
         let device = default_device();
-        
+
         let trans_data = vec![1.0f32; 3 * 2 * 3];
-        let trans: Tensor<DefaultBackend, 3> = Tensor::<DefaultBackend, 1>::from_floats(
-            trans_data.as_slice(),
-            &device,
-        ).reshape([3, 2, 3]) / 3.0;
-        
+        let trans: Tensor<DefaultBackend, 3> =
+            Tensor::<DefaultBackend, 1>::from_floats(trans_data.as_slice(), &device)
+                .reshape([3, 2, 3])
+                / 3.0;
+
         let goal: Tensor<DefaultBackend, 2> = Tensor::zeros([3, 2], &device);
-        
+
         // Constraint with negative value
         let mut constraint_data = vec![1.0f32; 3 * 2];
         constraint_data[0] = -0.1; // Invalid!
-        let constraint: Tensor<DefaultBackend, 2> = Tensor::<DefaultBackend, 1>::from_floats(
-            constraint_data.as_slice(),
-            &device,
-        ).reshape([3, 2]);
-        
+        let constraint: Tensor<DefaultBackend, 2> =
+            Tensor::<DefaultBackend, 1>::from_floats(constraint_data.as_slice(), &device)
+                .reshape([3, 2]);
+
         let mdp = TaskMDP::<DefaultBackend>::new(trans, goal, constraint, 10).unwrap();
         let validation = mdp.validate_probability_bounds();
         assert!(validation.is_err());
-        
+
         match validation.unwrap_err() {
             StokError::InvalidProbability { value, context } => {
                 assert!(value < 0.0);
@@ -728,20 +717,20 @@ mod tests {
     #[test]
     fn test_invalid_mdp_zero_max_time() {
         let device = default_device();
-        
+
         let trans_data = vec![1.0f32; 3 * 2 * 3];
-        let trans: Tensor<DefaultBackend, 3> = Tensor::<DefaultBackend, 1>::from_floats(
-            trans_data.as_slice(),
-            &device,
-        ).reshape([3, 2, 3]) / 3.0;
-        
+        let trans: Tensor<DefaultBackend, 3> =
+            Tensor::<DefaultBackend, 1>::from_floats(trans_data.as_slice(), &device)
+                .reshape([3, 2, 3])
+                / 3.0;
+
         let goal: Tensor<DefaultBackend, 2> = Tensor::zeros([3, 2], &device);
         let constraint: Tensor<DefaultBackend, 2> = Tensor::ones([3, 2], &device);
-        
+
         // Zero max_time should fail
         let result = TaskMDP::<DefaultBackend>::new(trans, goal, constraint, 0);
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             StokError::InvalidDimension { name, value, .. } => {
                 assert_eq!(name, "max_time");
@@ -754,21 +743,19 @@ mod tests {
     #[test]
     fn test_validate_catches_all_errors() {
         let device = default_device();
-        
+
         // Create MDP with multiple issues: non-stochastic + invalid goal
         let bad_trans: Tensor<DefaultBackend, 3> = Tensor::zeros([3, 2, 3], &device);
-        
+
         let mut goal_data = vec![0.0f32; 3 * 2];
         goal_data[0] = -0.5;
-        let bad_goal: Tensor<DefaultBackend, 2> = Tensor::<DefaultBackend, 1>::from_floats(
-            goal_data.as_slice(),
-            &device,
-        ).reshape([3, 2]);
-        
+        let bad_goal: Tensor<DefaultBackend, 2> =
+            Tensor::<DefaultBackend, 1>::from_floats(goal_data.as_slice(), &device).reshape([3, 2]);
+
         let constraint: Tensor<DefaultBackend, 2> = Tensor::ones([3, 2], &device);
-        
+
         let mdp = TaskMDP::<DefaultBackend>::new(bad_trans, bad_goal, constraint, 10).unwrap();
-        
+
         // Full validate should fail (catches first error - stochastic)
         let result = mdp.validate();
         assert!(result.is_err());
@@ -781,12 +768,12 @@ mod tests {
     #[test]
     fn test_single_state_mdp() {
         let device = default_device();
-        
+
         // Minimal valid MDP: 1 state, 1 action
         let trans: Tensor<DefaultBackend, 3> = Tensor::ones([1, 1, 1], &device);
         let goal: Tensor<DefaultBackend, 2> = Tensor::ones([1, 1], &device);
         let constraint: Tensor<DefaultBackend, 2> = Tensor::ones([1, 1], &device);
-        
+
         let mdp = TaskMDP::<DefaultBackend>::new(trans, goal, constraint, 5).unwrap();
         assert!(mdp.validate().is_ok());
         assert_eq!(mdp.n_states(), 1);
@@ -796,20 +783,20 @@ mod tests {
     #[test]
     fn test_all_constraint_violated() {
         let device = default_device();
-        
+
         // MDP where all states violate constraints (f_c = 0 everywhere)
         let trans_data = vec![1.0f32; 3 * 2 * 3];
-        let trans: Tensor<DefaultBackend, 3> = Tensor::<DefaultBackend, 1>::from_floats(
-            trans_data.as_slice(),
-            &device,
-        ).reshape([3, 2, 3]) / 3.0;
-        
+        let trans: Tensor<DefaultBackend, 3> =
+            Tensor::<DefaultBackend, 1>::from_floats(trans_data.as_slice(), &device)
+                .reshape([3, 2, 3])
+                / 3.0;
+
         let goal: Tensor<DefaultBackend, 2> = Tensor::zeros([3, 2], &device);
         let constraint: Tensor<DefaultBackend, 2> = Tensor::zeros([3, 2], &device); // All violated!
-        
+
         let mdp = TaskMDP::<DefaultBackend>::new(trans, goal, constraint, 10).unwrap();
         assert!(mdp.validate().is_ok()); // Structure is valid
-        
+
         // f_1 and f_2 should both be zero everywhere
         let f1_data: Vec<f32> = mdp.f1.into_data().to_vec().unwrap();
         let f2_data: Vec<f32> = mdp.f2.into_data().to_vec().unwrap();

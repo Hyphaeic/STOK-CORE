@@ -44,4 +44,4 @@
 
 mod kernel;
 
-pub use kernel::{STOKKernel, STOKData};
+pub use kernel::{STOKData, STOKKernel};

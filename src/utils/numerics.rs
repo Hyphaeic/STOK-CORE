@@ -191,11 +191,11 @@ pub fn safe_div(a: f32, b: f32) -> f32 {
 pub fn diag_matrix<B: Backend>(diag: &Tensor<B, 1>) -> Tensor<B, 2> {
     let n = diag.dims()[0];
     let device = diag.device();
-    
+
     // Create identity matrix and multiply by diagonal values
     let eye: Tensor<B, 2> = Tensor::eye(n, &device);
     let diag_expanded = diag.clone().unsqueeze_dim(1); // [N, 1]
-    
+
     eye * diag_expanded
 }
 
@@ -214,7 +214,7 @@ pub fn identity_stok_slice<B: Backend>(n_states: usize, device: &B::Device) -> T
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{DefaultBackend, default_device};
+    use crate::backend::{default_device, DefaultBackend};
 
     #[test]
     fn test_approx_eq() {
@@ -242,9 +242,8 @@ mod tests {
     #[test]
     fn test_linf_norm() {
         let device = default_device();
-        let tensor: Tensor<DefaultBackend, 1> = 
-            Tensor::from_floats([1.0, -3.0, 2.0], &device);
-        
+        let tensor: Tensor<DefaultBackend, 1> = Tensor::from_floats([1.0, -3.0, 2.0], &device);
+
         let norm = linf_norm(&tensor);
         assert!(approx_eq(norm, 3.0, 1e-6));
     }
@@ -254,7 +253,7 @@ mod tests {
         let device = default_device();
         let a: Tensor<DefaultBackend, 1> = Tensor::from_floats([1.0, 2.0, 3.0], &device);
         let b: Tensor<DefaultBackend, 1> = Tensor::from_floats([1.0, 2.5, 3.0], &device);
-        
+
         let dist = linf_distance(&a, &b);
         assert!(approx_eq(dist, 0.5, 1e-6));
     }
@@ -264,7 +263,7 @@ mod tests {
         let device = default_device();
         let a: Tensor<DefaultBackend, 1> = Tensor::from_floats([1.0, 2.0, 3.0], &device);
         let b = a.clone();
-        
+
         let dist = linf_distance(&a, &b);
         assert!(approx_zero(dist, 1e-6));
     }
@@ -272,12 +271,11 @@ mod tests {
     #[test]
     fn test_clamp_probabilities() {
         let device = default_device();
-        let tensor: Tensor<DefaultBackend, 1> = 
-            Tensor::from_floats([-0.1, 0.5, 1.2], &device);
-        
+        let tensor: Tensor<DefaultBackend, 1> = Tensor::from_floats([-0.1, 0.5, 1.2], &device);
+
         let clamped = clamp_probabilities(tensor);
         let data: Vec<f32> = clamped.into_data().to_vec().unwrap();
-        
+
         assert!(approx_eq(data[0], 0.0, 1e-6));
         assert!(approx_eq(data[1], 0.5, 1e-6));
         assert!(approx_eq(data[2], 1.0, 1e-6));
@@ -286,25 +284,22 @@ mod tests {
     #[test]
     fn test_validate_probability_tensor() {
         let device = default_device();
-        
-        let valid: Tensor<DefaultBackend, 1> = 
-            Tensor::from_floats([0.0, 0.5, 1.0], &device);
+
+        let valid: Tensor<DefaultBackend, 1> = Tensor::from_floats([0.0, 0.5, 1.0], &device);
         assert!(validate_probability_tensor(&valid, 1e-6));
-        
-        let invalid: Tensor<DefaultBackend, 1> = 
-            Tensor::from_floats([-0.1, 0.5, 1.0], &device);
+
+        let invalid: Tensor<DefaultBackend, 1> = Tensor::from_floats([-0.1, 0.5, 1.0], &device);
         assert!(!validate_probability_tensor(&invalid, 1e-6));
     }
 
     #[test]
     fn test_diag_matrix() {
         let device = default_device();
-        let diag: Tensor<DefaultBackend, 1> = 
-            Tensor::from_floats([1.0, 2.0, 3.0], &device);
-        
+        let diag: Tensor<DefaultBackend, 1> = Tensor::from_floats([1.0, 2.0, 3.0], &device);
+
         let mat = diag_matrix(&diag);
         let data: Vec<f32> = mat.into_data().to_vec().unwrap();
-        
+
         // Should be [[1,0,0], [0,2,0], [0,0,3]]
         assert!(approx_eq(data[0], 1.0, 1e-6)); // [0,0]
         assert!(approx_eq(data[1], 0.0, 1e-6)); // [0,1]
@@ -315,9 +310,8 @@ mod tests {
     #[test]
     fn test_l2_norm() {
         let device = default_device();
-        let tensor: Tensor<DefaultBackend, 1> = 
-            Tensor::from_floats([3.0, 4.0], &device);
-        
+        let tensor: Tensor<DefaultBackend, 1> = Tensor::from_floats([3.0, 4.0], &device);
+
         let norm = l2_norm(&tensor);
         assert!(approx_eq(norm, 5.0, 1e-5)); // 3² + 4² = 25, √25 = 5
     }

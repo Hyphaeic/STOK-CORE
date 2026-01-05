@@ -51,27 +51,27 @@ pub fn bellman_backup_kappa<B: Backend>(
 ) -> (Tensor<B, 1>, Tensor<B, 1, Int>) {
     let s = mdp.n_states();
     let a = mdp.n_actions();
-    
+
     // Step 1: Compute expected future feasibility E_{x'}[κ(x')]
     // Reshape P from [S, A, S] to [S*A, S] for batched matmul
     let p_flat = mdp.transition.clone().reshape([s * a, s]);
-    
+
     // Reshape κ to column vector [S, 1]
     let kappa_col = kappa.clone().reshape([s, 1]);
-    
+
     // Batched matmul: [S*A, S] × [S, 1] = [S*A, 1]
     // Then reshape to [S, A]
     let expected_kappa = p_flat.matmul(kappa_col).reshape([s, a]);
-    
+
     // Step 2: Compute Q-values
     // Q(x, a) = f₁(x,a) + f₂(x,a) * E[κ(x')]
     // This should fuse with Step 1 in JIT compilation
     let q_values = mdp.f1.clone() + mdp.f2.clone() * expected_kappa;
-    
+
     // Step 3: Maximize over actions
     // For each state, find max Q-value and argmax action
     let (kappa_new, policy) = q_values.max_dim_with_indices(1);
-    
+
     // Squeeze from [S, 1] to [S]
     (kappa_new.squeeze::<1>(), policy.squeeze::<1>())
 }
@@ -101,32 +101,32 @@ pub fn bellman_backup_kappa_with_tiebreak<B: Backend>(
     let s = mdp.n_states();
     let a = mdp.n_actions();
     let device = kappa.device();
-    
+
     // Step 1: Compute Q-values (same as before)
     let p_flat = mdp.transition.clone().reshape([s * a, s]);
     let kappa_col = kappa.clone().reshape([s, 1]);
     let expected_kappa = p_flat.matmul(kappa_col).reshape([s, a]);
     let q_values = mdp.f1.clone() + mdp.f2.clone() * expected_kappa;
-    
+
     // Step 2: Get max Q-value per state
     let q_max = q_values.clone().max_dim(1).squeeze::<1>(); // [S]
-    
+
     // Step 3: Create tie mask - actions within tolerance of max
     let q_max_expanded = q_max.clone().unsqueeze_dim::<2>(1).expand([s, a]); // [S, A]
     let threshold = q_max_expanded.clone() - tie_tolerance;
     let tie_mask: Tensor<B, 2> = q_values.clone().greater_equal(threshold).float();
-    
+
     // Step 4: Among tied actions, prefer higher f₁ (immediate goal probability)
     // Set non-tied actions to -inf for secondary selection
     let neg_inf = -1e10_f32;
     let neg_inf_tensor: Tensor<B, 2> = Tensor::full([s, a], neg_inf, &device);
-    let f1_masked = mdp.f1.clone() * tie_mask.clone() 
+    let f1_masked = mdp.f1.clone() * tie_mask.clone()
         + neg_inf_tensor * (Tensor::ones([s, a], &device) - tie_mask);
-    
+
     // Step 5: Select policy as argmax of masked f₁ (breaks ties)
     let (_, policy) = f1_masked.max_dim_with_indices(1);
     let policy = policy.squeeze::<1>();
-    
+
     // Step 6: κ_new is still the max Q-value
     (q_max, policy)
 }
@@ -137,17 +137,14 @@ pub fn bellman_backup_kappa_with_tiebreak<B: Backend>(
 ///
 /// # Returns
 /// Q-values tensor of shape [S, A]
-pub fn compute_q_values<B: Backend>(
-    kappa: &Tensor<B, 1>,
-    mdp: &TaskMDP<B>,
-) -> Tensor<B, 2> {
+pub fn compute_q_values<B: Backend>(kappa: &Tensor<B, 1>, mdp: &TaskMDP<B>) -> Tensor<B, 2> {
     let s = mdp.n_states();
     let a = mdp.n_actions();
-    
+
     let p_flat = mdp.transition.clone().reshape([s * a, s]);
     let kappa_col = kappa.clone().reshape([s, 1]);
     let expected_kappa = p_flat.matmul(kappa_col).reshape([s, a]);
-    
+
     mdp.f1.clone() + mdp.f2.clone() * expected_kappa
 }
 
@@ -171,18 +168,17 @@ pub fn get_policy_transition<B: Backend>(
 ) -> Tensor<B, 2> {
     let s = transition.dims()[0];
     let s_next = transition.dims()[2];
-    
+
     // Expand policy for gathering: [S] -> [S, 1, 1] -> [S, 1, S_next]
     // Must reshape to 3D FIRST, then expand can broadcast the last dim
-    let policy_expanded = policy.clone()
-        .reshape([s, 1, 1])        // [S] -> [S, 1, 1]  (add both singleton dims)
-        .expand([s, 1, s_next]);   // [S, 1, 1] -> [S, 1, S_next]  (broadcast last dim)
-    
+    let policy_expanded = policy
+        .clone()
+        .reshape([s, 1, 1]) // [S] -> [S, 1, 1]  (add both singleton dims)
+        .expand([s, 1, s_next]); // [S, 1, 1] -> [S, 1, S_next]  (broadcast last dim)
+
     // Gather along action dimension (dim 1)
     // [S, A, S] gather with [S, 1, S] -> [S, 1, S] -> [S, S]
-    transition.clone()
-        .gather(1, policy_expanded)
-        .squeeze::<2>()
+    transition.clone().gather(1, policy_expanded).squeeze::<2>()
 }
 
 /// Extract values at policy actions: v_π(x) = v(x, π(x))
@@ -198,14 +194,12 @@ pub fn gather_by_policy<B: Backend>(
     policy: &Tensor<B, 1, Int>,
 ) -> Tensor<B, 1> {
     let s = values.dims()[0];
-    
+
     // Expand policy for gathering: [S] -> [S, 1]
     let policy_expanded = policy.clone().reshape([s, 1]);
-    
+
     // Gather along action dimension and squeeze
-    values.clone()
-        .gather(1, policy_expanded)
-        .squeeze::<1>()
+    values.clone().gather(1, policy_expanded).squeeze::<1>()
 }
 
 // ============================================================================
@@ -234,7 +228,7 @@ pub fn gather_by_policy<B: Backend>(
             This is NOT π** and violates Phase 2 alignment. \
             Use extract_pi_time_minimizing (internal) via feasibility_iteration instead."
 )]
-#[cfg(test)] 
+#[cfg(test)]
 pub fn bellman_backup_policy_tiebreak<B: Backend>(
     q_values: &Tensor<B, 2>,
     kappa_max: &Tensor<B, 1>,
@@ -242,20 +236,23 @@ pub fn bellman_backup_policy_tiebreak<B: Backend>(
     tolerance: f32,
 ) -> Tensor<B, 1, Int> {
     let s = q_values.dims()[0];
-    
+
     // Create mask for optimal actions: Q(x,a) ≥ κ*(x) - tolerance
     let kappa_expanded = kappa_max.clone().unsqueeze_dim(1); // [S, 1]
     let threshold = kappa_expanded.clone() - tolerance;
     let optimal_mask = q_values.clone().greater_equal(threshold);
-    
+
     // For non-optimal actions, set time to large value
     let large_value: f32 = 1e10;
-    let large_tensor: Tensor<B, 2> = Tensor::full([s, expected_time.dims()[1]], large_value, &expected_time.device());
-    
+    let large_tensor: Tensor<B, 2> = Tensor::full(
+        [s, expected_time.dims()[1]],
+        large_value,
+        &expected_time.device(),
+    );
+
     // Where optimal, use actual time; elsewhere use large value
-    let masked_time = expected_time.clone()
-        .mask_where(optimal_mask, large_tensor);
-    
+    let masked_time = expected_time.clone().mask_where(optimal_mask, large_tensor);
+
     // Select minimum-time action among optimal
     let (_, policy) = masked_time.min_dim_with_indices(1);
     policy.squeeze::<1>()
@@ -277,16 +274,16 @@ pub fn bellman_backup_single_state<B: Backend>(
 ) -> (f32, usize) {
     let n_actions = mdp.n_actions();
     let n_states = mdp.n_states();
-    
+
     // Extract data to CPU
     let kappa_data: Vec<f32> = kappa.clone().into_data().to_vec().unwrap();
     let f1_data: Vec<f32> = mdp.f1.clone().into_data().to_vec().unwrap();
     let f2_data: Vec<f32> = mdp.f2.clone().into_data().to_vec().unwrap();
     let p_data: Vec<f32> = mdp.transition.clone().into_data().to_vec().unwrap();
-    
+
     let mut best_q = f32::NEG_INFINITY;
     let mut best_action = 0usize;
-    
+
     for a in 0..n_actions {
         // Compute expected future feasibility
         let mut expected_kappa = 0.0f32;
@@ -295,17 +292,17 @@ pub fn bellman_backup_single_state<B: Backend>(
             let p_idx = state * n_actions * n_states + a * n_states + s_next;
             expected_kappa += p_data[p_idx] * kappa_data[s_next];
         }
-        
+
         // Compute Q-value
         let sa_idx = state * n_actions + a;
         let q = f1_data[sa_idx] + f2_data[sa_idx] * expected_kappa;
-        
+
         if q > best_q {
             best_q = q;
             best_action = a;
         }
     }
-    
+
     (best_q, best_action)
 }
 
@@ -316,7 +313,7 @@ pub fn bellman_backup_single_state<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{DefaultBackend, default_device};
+    use crate::backend::{default_device, DefaultBackend};
     use crate::mdp::TaskMDP;
     use crate::utils::approx_eq;
     use burn::backend::Wgpu;
@@ -327,9 +324,9 @@ mod tests {
         let device = default_device();
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 10, &device);
         let kappa: Tensor<DefaultBackend, 1> = Tensor::zeros([5], &device);
-        
+
         let (kappa_new, policy) = bellman_backup_kappa(&kappa, &mdp);
-        
+
         assert_eq!(kappa_new.dims(), [5]);
         assert_eq!(policy.dims(), [5]);
     }
@@ -338,38 +335,45 @@ mod tests {
     fn test_bellman_backup_goal_state() {
         let device = default_device();
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 10, &device);
-        
+
         // Zero initialization
         let kappa: Tensor<DefaultBackend, 1> = Tensor::zeros([5], &device);
-        
+
         // After one backup, goal state should have κ = 1.0
         let (kappa_new, _) = bellman_backup_kappa(&kappa, &mdp);
         let kappa_data: Vec<f32> = kappa_new.into_data().to_vec().unwrap();
-        
+
         // Goal state is state 4 (last state in 5-state chain)
-        assert!(approx_eq(kappa_data[4], 1.0, 1e-6), 
-            "Goal state should have κ=1.0, got {}", kappa_data[4]);
+        assert!(
+            approx_eq(kappa_data[4], 1.0, 1e-6),
+            "Goal state should have κ=1.0, got {}",
+            kappa_data[4]
+        );
     }
 
     #[test]
     fn test_bellman_backup_propagation() {
         let device = default_device();
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(5, 10, &device);
-        
+
         // Run multiple iterations to propagate feasibility
         let mut kappa: Tensor<DefaultBackend, 1> = Tensor::zeros([5], &device);
-        
+
         for _ in 0..5 {
             let (kappa_new, _) = bellman_backup_kappa(&kappa, &mdp);
             kappa = kappa_new;
         }
-        
+
         let kappa_data: Vec<f32> = kappa.into_data().to_vec().unwrap();
-        
+
         // All states should be feasible (κ = 1.0) after enough iterations
         for (i, &k) in kappa_data.iter().enumerate() {
-            assert!(approx_eq(k, 1.0, 1e-5), 
-                "State {} should have κ=1.0, got {}", i, k);
+            assert!(
+                approx_eq(k, 1.0, 1e-5),
+                "State {} should have κ=1.0, got {}",
+                i,
+                k
+            );
         }
     }
 
@@ -378,63 +382,86 @@ mod tests {
         let device = default_device();
         // Create chain with fire at state 2
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::constrained_chain(5, 2, 10, &device);
-        
+
         // Run to convergence
         let mut kappa: Tensor<DefaultBackend, 1> = Tensor::zeros([5], &device);
-        
+
         for _ in 0..10 {
             let (kappa_new, _) = bellman_backup_kappa(&kappa, &mdp);
             kappa = kappa_new;
         }
-        
+
         let kappa_data: Vec<f32> = kappa.into_data().to_vec().unwrap();
-        
+
         // States 0, 1 are blocked by fire at state 2
         // States 3, 4 should be feasible
-        assert!(kappa_data[0] < 0.01, "State 0 should be infeasible, got {}", kappa_data[0]);
-        assert!(kappa_data[1] < 0.01, "State 1 should be infeasible, got {}", kappa_data[1]);
-        assert!(kappa_data[2] < 0.01, "State 2 (fire) should be infeasible, got {}", kappa_data[2]);
-        assert!(approx_eq(kappa_data[3], 1.0, 1e-5), "State 3 should be feasible, got {}", kappa_data[3]);
-        assert!(approx_eq(kappa_data[4], 1.0, 1e-5), "State 4 should be feasible, got {}", kappa_data[4]);
+        assert!(
+            kappa_data[0] < 0.01,
+            "State 0 should be infeasible, got {}",
+            kappa_data[0]
+        );
+        assert!(
+            kappa_data[1] < 0.01,
+            "State 1 should be infeasible, got {}",
+            kappa_data[1]
+        );
+        assert!(
+            kappa_data[2] < 0.01,
+            "State 2 (fire) should be infeasible, got {}",
+            kappa_data[2]
+        );
+        assert!(
+            approx_eq(kappa_data[3], 1.0, 1e-5),
+            "State 3 should be feasible, got {}",
+            kappa_data[3]
+        );
+        assert!(
+            approx_eq(kappa_data[4], 1.0, 1e-5),
+            "State 4 should be feasible, got {}",
+            kappa_data[4]
+        );
     }
 
     #[test]
     fn test_get_policy_transition() {
         let device = default_device();
         let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(3, 5, &device);
-        
+
         // Create a simple policy: all states take action 0
         let policy: Tensor<DefaultBackend, 1, Int> = Tensor::zeros([3], &device);
-        
+
         let p_pi = get_policy_transition(&mdp.transition, &policy);
-        
+
         assert_eq!(p_pi.dims(), [3, 3]);
-        
+
         // Should be row-stochastic
         let row_sums = p_pi.clone().sum_dim(1);
         let row_sums_data: Vec<f32> = row_sums.into_data().to_vec().unwrap();
-        
+
         for (i, &sum) in row_sums_data.iter().enumerate() {
-            assert!(approx_eq(sum, 1.0, 1e-5), 
-                "Row {} should sum to 1.0, got {}", i, sum);
+            assert!(
+                approx_eq(sum, 1.0, 1e-5),
+                "Row {} should sum to 1.0, got {}",
+                i,
+                sum
+            );
         }
     }
 
     #[test]
     fn test_gather_by_policy() {
         let device = default_device();
-        
+
         // Create test values [S=3, A=2]
-        let values: Tensor<DefaultBackend, 2> = 
+        let values: Tensor<DefaultBackend, 2> =
             Tensor::from_floats([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], &device);
-        
+
         // Policy: state 0 -> action 1, state 1 -> action 0, state 2 -> action 1
-        let policy: Tensor<DefaultBackend, 1, Int> = 
-            Tensor::from_ints([1, 0, 1], &device);
-        
+        let policy: Tensor<DefaultBackend, 1, Int> = Tensor::from_ints([1, 0, 1], &device);
+
         let gathered = gather_by_policy(&values, &policy);
         let gathered_data: Vec<f32> = gathered.into_data().to_vec().unwrap();
-        
+
         // Expected: [values[0,1], values[1,0], values[2,1]] = [2.0, 3.0, 6.0]
         assert!(approx_eq(gathered_data[0], 2.0, 1e-6));
         assert!(approx_eq(gathered_data[1], 3.0, 1e-6));
@@ -444,23 +471,25 @@ mod tests {
     fn test_policy_validity() {
         let device = default_device();
         let mdp: TaskMDP<TestBackend> = TaskMDP::simple_chain(5, 20, &device);
-        
+
         // Initialize κ to zeros
         let kappa = Tensor::zeros([mdp.n_states()], &device);
-        
+
         // Run one Bellman backup
         let (_, policy) = bellman_backup_kappa(&kappa, &mdp);
-        
+
         // FIXED: Use i32 instead of i64
         let policy_data: Vec<i32> = policy.into_data().to_vec().unwrap();
-        let n_actions = mdp.n_actions() as i32;  // FIXED: cast to i32
-        
+        let n_actions = mdp.n_actions() as i32; // FIXED: cast to i32
+
         // All policy indices should be valid (in range [0, n_actions))
         for (state, &action) in policy_data.iter().enumerate() {
             assert!(
                 action >= 0 && action < n_actions,
                 "Invalid policy at state {}: action {} not in [0, {})",
-                state, action, n_actions
+                state,
+                action,
+                n_actions
             );
         }
     }

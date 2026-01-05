@@ -62,32 +62,19 @@ pub mod stok_construction;
 
 // Re-export primary types
 pub use bellman::{
-    bellman_backup_kappa,
-    compute_q_values,
-    get_policy_transition,
-    gather_by_policy,
+    bellman_backup_kappa, compute_q_values, gather_by_policy, get_policy_transition,
 };
 
 pub use convergence::{
-    ConvergenceConfig,
-    ConvergenceState,
-    ConvergenceReason,
-    check_kappa_convergence,
-    should_check_convergence,
-    validate_monotonicity,
+    check_kappa_convergence, should_check_convergence, validate_monotonicity, ConvergenceConfig,
+    ConvergenceReason, ConvergenceState,
 };
 
 pub use feasibility_iteration::{
-    FeasibilityIterationConfig,
-    FeasibilityIterationResult,
-    IterationTiming,
-    feasibility_iteration,
-    solve_task_mdp,
-    compute_kappa,
+    compute_kappa, feasibility_iteration, solve_task_mdp, FeasibilityIterationConfig,
+    FeasibilityIterationResult, IterationTiming,
 };
 
 pub use stok_construction::{
-    construct_stok,
-    validate_stok_normalization,
-    validate_kappa_eta_consistency,
+    construct_stok, validate_kappa_eta_consistency, validate_stok_normalization,
 };

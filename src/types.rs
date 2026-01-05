@@ -162,7 +162,7 @@ impl fmt::Display for TimeIdx {
 /// assert_eq!(format!("{}", goal), "Goal(0)");
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct GoalId(u32);
+pub struct GoalId(pub u32);
 
 impl GoalId {
     /// Create a new goal identifier.
@@ -461,24 +461,45 @@ pub enum StokError {
         /// Description of the composition error
         message: String,
     },
+
+    /// Empty option sequence provided.
+    ///
+    /// Occurs when attempting to compose an empty sequence of options.
+    EmptySequence,
 }
 
 impl fmt::Display for StokError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DimensionMismatch { expected, got } => {
-                write!(f, "Dimension mismatch: expected {:?}, got {:?}", expected, got)
+                write!(
+                    f,
+                    "Dimension mismatch: expected {:?}, got {:?}",
+                    expected, got
+                )
             }
-            Self::InvalidDimension { name, value, reason } => {
+            Self::InvalidDimension {
+                name,
+                value,
+                reason,
+            } => {
                 write!(f, "Invalid dimension '{}' = {}: {}", name, value, reason)
             }
             Self::NumericalInstability { location, value } => {
-                write!(f, "Numerical instability at {}: value = {}", location, value)
+                write!(
+                    f,
+                    "Numerical instability at {}: value = {}",
+                    location, value
+                )
             }
             Self::InvalidProbability { value, context } => {
                 write!(f, "Invalid probability {} in {}", value, context)
             }
-            Self::NotNormalized { sum, expected, tolerance } => {
+            Self::NotNormalized {
+                sum,
+                expected,
+                tolerance,
+            } => {
                 write!(
                     f,
                     "Not normalized: sum = {}, expected = {} (±{})",
@@ -495,6 +516,9 @@ impl fmt::Display for StokError {
             }
             Self::CompositionError { message } => {
                 write!(f, "Composition error: {}", message)
+            }
+            Self::EmptySequence => {
+                write!(f, "Empty option sequence provided for composition")
             }
         }
     }
@@ -766,7 +790,7 @@ mod tests {
     #[test]
     fn test_stok_dimensions_sizes() {
         let dims = STOKDimensions::new(4, 3);
-        assert_eq!(dims.stok_size(), 4 * 4 * 3);  // S * S * T
-        assert_eq!(dims.state_time_size(), 4 * 3);  // S * T
+        assert_eq!(dims.stok_size(), 4 * 4 * 3); // S * S * T
+        assert_eq!(dims.state_time_size(), 4 * 3); // S * T
     }
 }

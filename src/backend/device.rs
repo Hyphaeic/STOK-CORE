@@ -66,12 +66,12 @@ pub enum DeviceConfig {
         /// GPU device index (0 = primary GPU)
         device_index: usize,
     },
-    
+
     /// CPU backend (for testing/fallback).
     ///
     /// Uses software rendering, significantly slower than GPU.
     Cpu,
-    
+
     /// CUDA backend (feature-gated).
     ///
     /// Requires `cuda` feature and NVIDIA GPU.
@@ -133,9 +133,7 @@ impl DeviceManager {
                     WgpuDevice::DiscreteGpu(*device_index)
                 }
             }
-            DeviceConfig::Cpu => {
-                WgpuDevice::Cpu
-            }
+            DeviceConfig::Cpu => WgpuDevice::Cpu,
             #[cfg(feature = "cuda")]
             DeviceConfig::Cuda { .. } => {
                 return Err(StokError::DeviceError(

@@ -29,8 +29,8 @@
 //!
 //! Ringstrom, T., & Schrater, P. (2025). Section G.2: "State-Time Option Kernel"
 
-use burn::prelude::*;
 use crate::types::{STOKDimensions, StokError, DEFAULT_PROBABILITY_TOLERANCE};
+use burn::prelude::*;
 
 /// State-Time Option Kernel with success/failure decomposition.
 ///
@@ -61,7 +61,7 @@ use crate::types::{STOKDimensions, StokError, DEFAULT_PROBABILITY_TOLERANCE};
 /// assert_eq!(kernel.n_states(), 10);
 /// assert_eq!(kernel.max_time(), 20);
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct STOKKernel<B: Backend> {
     /// Success termination probabilities η⁺(x_f, t_f | x_i).
     ///
@@ -130,7 +130,7 @@ impl<B: Backend> STOKKernel<B> {
     /// ```
     pub fn new(n_states: usize, max_time: usize, device: &B::Device) -> Self {
         let dims = STOKDimensions::new(n_states, max_time);
-        
+
         // Validate dimensions
         if let Err(e) = dims.validate() {
             panic!("Invalid dimensions for STOKKernel: {:?}", e);
@@ -164,8 +164,14 @@ impl<B: Backend> STOKKernel<B> {
         dims: STOKDimensions,
     ) -> Self {
         // Debug assertions for dimension validation
-        debug_assert_eq!(eta_plus.dims(), [dims.n_states, dims.n_states, dims.max_time]);
-        debug_assert_eq!(eta_minus.dims(), [dims.n_states, dims.n_states, dims.max_time]);
+        debug_assert_eq!(
+            eta_plus.dims(),
+            [dims.n_states, dims.n_states, dims.max_time]
+        );
+        debug_assert_eq!(
+            eta_minus.dims(),
+            [dims.n_states, dims.n_states, dims.max_time]
+        );
         debug_assert_eq!(kappa.dims(), [dims.n_states]);
         debug_assert_eq!(policy.dims(), [dims.n_states]);
 
@@ -197,7 +203,7 @@ impl<B: Backend> STOKKernel<B> {
     ) -> Self {
         let n_states = dims.n_states;
         let max_time = dims.max_time;
-    
+
         Self {
             eta_plus: Tensor::zeros([n_states, n_states, max_time], device),
             eta_minus: Tensor::zeros([n_states, n_states, max_time], device),
@@ -242,9 +248,12 @@ impl<B: Backend> STOKKernel<B> {
     /// Equation [15]: κ*_g(x) = Σ_{x_f} Σ_{t_f} η⁺_{π_g}(x_f, t_f | x)
     pub fn kappa_from_eta(&self) -> Tensor<B, 1> {
         // Sum over x_f (dim 1) and t_f (dim 2)
-        self.eta_plus.clone()
-            .sum_dim(2).squeeze::<2>()
-            .sum_dim(1).squeeze::<1>()
+        self.eta_plus
+            .clone()
+            .sum_dim(2)
+            .squeeze::<2>()
+            .sum_dim(1)
+            .squeeze::<1>()
     }
 
     /// Compute infeasibility 1 - κ from η⁻.
@@ -255,9 +264,12 @@ impl<B: Backend> STOKKernel<B> {
     ///
     /// Equation [16]: 1 - κ*_g(x) = Σ_{x_f} Σ_{t_f} η⁻_{π_g}(x_f, t_f | x)
     pub fn infeasibility(&self) -> Tensor<B, 1> {
-        self.eta_minus.clone()
-            .sum_dim(2).squeeze::<2>()
-            .sum_dim(1).squeeze::<1>()
+        self.eta_minus
+            .clone()
+            .sum_dim(2)
+            .squeeze::<2>()
+            .sum_dim(1)
+            .squeeze::<1>()
     }
 
     /// Compute combined STOK η** = η⁺ + η⁻.
@@ -301,9 +313,7 @@ impl<B: Backend> STOKKernel<B> {
     pub fn validate_normalization(&self, tolerance: f32) -> Result<(), StokError> {
         let combined = self.combined_stok();
         // Sum over x_f and t_f for each x_i
-        let sums: Tensor<B, 1> = combined
-            .sum_dim(2).squeeze::<2>()
-            .sum_dim(1).squeeze::<1>();
+        let sums: Tensor<B, 1> = combined.sum_dim(2).squeeze::<2>().sum_dim(1).squeeze::<1>();
 
         let device = sums.device();
         let ones: Tensor<B, 1> = Tensor::ones(sums.dims(), &device);
@@ -459,7 +469,7 @@ pub struct STOKData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{DefaultBackend, default_device};
+    use crate::backend::{default_device, DefaultBackend};
 
     // ========================================================================
     // Initialization Tests
@@ -509,11 +519,13 @@ mod tests {
         // Manually set some values
         let eta_plus_data: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4, 0.0, 0.0, 0.0, 0.0];
         let eta_minus_data: Vec<f32> = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0];
-        
-        kernel.eta_plus = Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
-        kernel.eta_minus = Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
+
+        kernel.eta_plus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
+        kernel.eta_minus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
 
         let combined = kernel.combined_stok();
         let data: Vec<f32> = combined.into_data().to_vec().unwrap();
@@ -545,8 +557,9 @@ mod tests {
             0.25, 0.25, // x_i=1, x_f=0, t_f=0,1
             0.25, 0.25, // x_i=1, x_f=1, t_f=0,1
         ];
-        kernel.eta_plus = Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
+        kernel.eta_plus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
 
         let kappa_computed = kernel.kappa_from_eta();
         let data: Vec<f32> = kappa_computed.into_data().to_vec().unwrap();
@@ -567,8 +580,9 @@ mod tests {
             0.0, 0.0, // x_i=1, x_f=0, t_f=0,1
             0.0, 0.0, // x_i=1, x_f=1, t_f=0,1
         ];
-        kernel.eta_minus = Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
+        kernel.eta_minus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
 
         let infeas = kernel.infeasibility();
         let data: Vec<f32> = infeas.into_data().to_vec().unwrap();
@@ -585,7 +599,7 @@ mod tests {
     fn test_validate_probability_bounds_zero_kernel() {
         let device = default_device();
         let kernel: STOKKernel<DefaultBackend> = STOKKernel::new(5, 3, &device);
-        
+
         // Zero-initialized kernel should pass bounds check
         assert!(kernel.validate_probability_bounds().is_ok());
     }
@@ -605,15 +619,16 @@ mod tests {
         ];
         let eta_minus_data: Vec<f32> = vec![
             0.1, 0.1, // x_i=0: failure contributions (total η⁻ from x_i=0 = 0.3)
-            0.05, 0.05,
-            0.0, 0.0, // x_i=1: no failures (total η⁻ from x_i=1 = 0.0)
+            0.05, 0.05, 0.0, 0.0, // x_i=1: no failures (total η⁻ from x_i=1 = 0.0)
             0.0, 0.0,
         ];
 
-        kernel.eta_plus = Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
-        kernel.eta_minus = Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
+        kernel.eta_plus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
+        kernel.eta_minus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
 
         // Should pass normalization check
         assert!(kernel.validate_normalization(1e-5).is_ok());
@@ -635,10 +650,12 @@ mod tests {
         ];
         let kappa_data: Vec<f32> = vec![0.7, 1.0]; // κ = Σ η⁺
 
-        kernel.eta_plus = Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
-        kernel.eta_minus = Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
+        kernel.eta_plus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
+        kernel.eta_minus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
         kernel.kappa = Tensor::<DefaultBackend, 1>::from_floats(kappa_data.as_slice(), &device);
 
         // Should pass consistency check
@@ -656,12 +673,13 @@ mod tests {
 
         // Set negative value in eta_plus
         let eta_plus_data: Vec<f32> = vec![-0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        kernel.eta_plus = Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
+        kernel.eta_plus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
 
         let result = kernel.validate_probability_bounds();
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             StokError::InvalidProbability { value, context } => {
                 assert!(value < 0.0);
@@ -678,12 +696,13 @@ mod tests {
 
         // Set value > 1.0 in eta_plus
         let eta_plus_data: Vec<f32> = vec![1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        kernel.eta_plus = Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
+        kernel.eta_plus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
 
         let result = kernel.validate_probability_bounds();
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             StokError::InvalidProbability { value, context } => {
                 assert!(value > 1.0);
@@ -699,12 +718,13 @@ mod tests {
         let mut kernel: STOKKernel<DefaultBackend> = STOKKernel::new(2, 2, &device);
 
         let eta_minus_data: Vec<f32> = vec![-0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        kernel.eta_minus = Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
+        kernel.eta_minus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_minus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
 
         let result = kernel.validate_probability_bounds();
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             StokError::InvalidProbability { context, .. } => {
                 assert_eq!(context, "eta_minus");
@@ -723,7 +743,7 @@ mod tests {
 
         let result = kernel.validate_probability_bounds();
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             StokError::InvalidProbability { context, .. } => {
                 assert_eq!(context, "kappa");
@@ -742,7 +762,7 @@ mod tests {
 
         let result = kernel.validate_probability_bounds();
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             StokError::InvalidProbability { value, context } => {
                 assert!(value > 1.0);
@@ -759,13 +779,14 @@ mod tests {
 
         // Combined STOK doesn't sum to 1
         let eta_plus_data: Vec<f32> = vec![0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1];
-        kernel.eta_plus = Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
+        kernel.eta_plus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
         // eta_minus stays zero, so sum = 0.4 per initial state (not 1.0)
 
         let result = kernel.validate_normalization(1e-5);
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             StokError::NotNormalized { expected, .. } => {
                 assert_eq!(expected, 1.0);
@@ -781,9 +802,10 @@ mod tests {
 
         // η⁺ sums to 0.4 per state, but κ is set to 0.9
         let eta_plus_data: Vec<f32> = vec![0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1];
-        kernel.eta_plus = Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
-            .reshape([2, 2, 2]);
-        
+        kernel.eta_plus =
+            Tensor::<DefaultBackend, 1>::from_floats(eta_plus_data.as_slice(), &device)
+                .reshape([2, 2, 2]);
+
         let kappa_data: Vec<f32> = vec![0.9, 0.9]; // Inconsistent with η⁺ sum of 0.4
         kernel.kappa = Tensor::<DefaultBackend, 1>::from_floats(kappa_data.as_slice(), &device);
 
@@ -826,29 +848,25 @@ mod tests {
     #[test]
     fn test_from_kappa_policy() {
         let device = default_device();
-        
+
         let kappa_data: Vec<f32> = vec![0.5, 0.8, 1.0];
-        let kappa: Tensor<DefaultBackend, 1> = Tensor::<DefaultBackend, 1>::from_floats(
-            kappa_data.as_slice(),
-            &device,
-        );
-        
+        let kappa: Tensor<DefaultBackend, 1> =
+            Tensor::<DefaultBackend, 1>::from_floats(kappa_data.as_slice(), &device);
+
         let policy_data: Vec<i32> = vec![1, 0, 2];
-        let policy: Tensor<DefaultBackend, 1, Int> = Tensor::<DefaultBackend, 1, Int>::from_ints(
-            policy_data.as_slice(),
-            &device,
-        );
+        let policy: Tensor<DefaultBackend, 1, Int> =
+            Tensor::<DefaultBackend, 1, Int>::from_ints(policy_data.as_slice(), &device);
 
         let kernel = STOKKernel::<DefaultBackend>::from_kappa_policy(
             kappa,
             policy,
-            STOKDimensions::new(3, 10),  // n_states=3 (from kappa length), max_time=10
+            STOKDimensions::new(3, 10), // n_states=3 (from kappa length), max_time=10
             &device,
         );
 
         assert_eq!(kernel.n_states(), 3);
         assert_eq!(kernel.max_time(), 10);
-        
+
         // η tensors should be zero
         let eta_data: Vec<f32> = kernel.eta_plus.into_data().to_vec().unwrap();
         assert!(eta_data.iter().all(|&v| v == 0.0));

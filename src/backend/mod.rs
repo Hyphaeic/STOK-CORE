@@ -34,10 +34,5 @@
 mod device;
 
 pub use device::{
-    DefaultBackend,
-    DefaultDevice,
-    DeviceConfig,
-    DeviceManager,
-    default_device,
-    cpu_device,
+    cpu_device, default_device, DefaultBackend, DefaultDevice, DeviceConfig, DeviceManager,
 };
