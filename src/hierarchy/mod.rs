@@ -32,7 +32,9 @@
 
 mod affordance;
 mod factorization;
+mod modes;
 mod product_space;
+mod sublimation;
 
 pub use affordance::{
     AffordanceFunction, FactorizedAffordance, HLAction, HLActionSet,
@@ -40,6 +42,14 @@ pub use affordance::{
 pub use factorization::{
     FactorizedSTOK, assemble_factorized_stok,
 };
+pub use modes::{
+    KeyDoorMode, ModeConditionedMDP, ModeFunction, MultiBitMode, NoMode, ThresholdMode,
+    MODE_CLOSED, MODE_OPEN,
+};
 pub use product_space::{
     HLState, ProductSpaceDims, ProductState,
+};
+pub use sublimation::{
+    SublimatedFeasibilityCache, SublimatedTMDP, compute_sublimated_feasibility,
+    extract_hl_constraint, maximize_goal_over_base,
 };

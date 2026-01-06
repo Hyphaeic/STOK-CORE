@@ -42,6 +42,16 @@ pub struct TreeSearchConfig {
 
     /// Whether to track all paths or just best
     pub track_all_paths: bool,
+
+    /// Sublimated feasibility for abstract pruning (Theorem 2.4)
+    ///
+    /// Maps HL space index → κ*_sub vector for that space.
+    ///
+    /// If provided, tree search will prune nodes where κ*_sub(z) = 0
+    /// for any HL component, as these are abstractly infeasible.
+    ///
+    /// See: Ringstrom & Schrater (2025), Theorem 2.4, Figure 7 (bottom)
+    pub sublimated_feasibility: Option<crate::hierarchy::SublimatedFeasibilityCache>,
 }
 
 impl Default for TreeSearchConfig {
@@ -53,6 +63,7 @@ impl Default for TreeSearchConfig {
             search_strategy: SearchStrategy::BreadthFirst,
             target_goal: None,
             track_all_paths: false,
+            sublimated_feasibility: None,
         }
     }
 }
@@ -257,6 +268,21 @@ pub fn tree_search<B: Backend>(
                 stats.nodes_pruned += 1;
                 continue;
             }
+
+            // TODO: Sublimation pruning (Theorem 2.4)
+            //
+            // When tree search is extended to support ProductState nodes:
+            //
+            // if let Some(ref sub_cache) = config.sublimated_feasibility {
+            //     for (space_idx, hl_state) in node.product_state.hl_states.iter().enumerate() {
+            //         if sub_cache.is_abstractly_infeasible(space_idx, hl_state.as_discrete()) {
+            //             stats.nodes_pruned_by_sublimation += 1;
+            //             continue;  // Skip this branch - abstractly infeasible
+            //         }
+            //     }
+            // }
+            //
+            // This implements the red star pruning from Figure 7 (bottom)
 
             // Determine next state (use mode for deterministic, could sample for stochastic)
             let (next_state, step_time) = sample_next_state_mode(goal_kernel, goal_id, node.state);
