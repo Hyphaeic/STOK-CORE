@@ -105,6 +105,7 @@
 // Module declarations
 pub mod backend;
 pub mod composition;
+pub mod hierarchy;
 pub mod mdp;
 pub mod planning;
 pub mod prediction;
@@ -264,3 +265,9 @@ pub use planning::{
 };
 
 pub use prediction::{CumulativeEventFunction, StatePredictionKernel, TemporalEventFunction};
+
+// Phase 6 re-exports (High-dimensional support)
+pub use hierarchy::{
+    AffordanceFunction, FactorizedAffordance, FactorizedSTOK, HLAction, HLActionSet, HLState,
+    ProductSpaceDims, ProductState, assemble_factorized_stok,
+};
