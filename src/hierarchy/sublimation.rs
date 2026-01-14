@@ -302,7 +302,7 @@ pub fn maximize_goal_over_base<B: Backend>(
     _hl_action_index: usize,
 ) -> Tensor<B, 2> {
     use crate::hierarchy::affordance::{AffordanceFunction, HLAction};
-    use burn::prelude::ElementConversion;
+    
 
     let device = base_mdp.goal_fn.device();
 

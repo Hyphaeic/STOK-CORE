@@ -33,7 +33,7 @@ use crate::solver::bellman::{
     bellman_backup_kappa, compute_q_values, gather_by_policy, get_policy_transition,
 };
 use crate::solver::convergence::{
-    check_kappa_convergence, should_check_convergence, validate_monotonicity, ConvergenceConfig,
+    check_kappa_convergence, should_check_convergence, ConvergenceConfig,
     ConvergenceReason, ConvergenceState,
 };
 use crate::solver::stok_construction::construct_stok;
