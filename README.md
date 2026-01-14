@@ -558,9 +558,9 @@ And optionally cite the implementation:
 ```bibtex
 @software{stokcore2026,
   title={STOK-Core: Complete Reference Implementation of Option Kernel Bellman Equations},
-  author={[Your Name]},
+  author={[BillyHDP]},
   year={2026},
-  url={https://github.com/your-repo/stok-core}
+  url={https://github.com/Hyphaeic/stok-core}
 }
 ```
 
