@@ -9,7 +9,7 @@
   
   **STOK-Core implements a **reward-free** reinforcement learning framework where policies optimize **State-Time Option Kernels (STOKs)**—full probability distributions over goal-success and constraint-violation events—instead of scalar value functions.**
   
-  Documentation: `cargo doc --open` · [Paper]({https://arxiv.org/abs/2506.09499}) · [Examples](examples)
+  Documentation: `cargo doc --open` · [Paper](https://arxiv.org/abs/2506.09499) · [Examples](examples)
   
   [HPL 1.0 License](https://github.com/hyphaeic/hpl) · [Local License](LICENSE)
 
