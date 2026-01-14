@@ -1,8 +1,7 @@
 # STOK-Core: State-Time Option Kernels
 
 [![Paper](https://img.shields.io/badge/arXiv-2506.09499-b31b1b.svg)](https://arxiv.org/abs/2506.09499)
-[![Tests](https://img.shields.io/badge/tests-220%2B%20passing-success)](https://github.com/your-repo/stok-core)
-[![Implementation](https://img.shields.io/badge/paper%20parity-100%2F100-brightgreen)](VICTORY_100_OF_100.md)
+[![Tests](https://img.shields.io/badge/tests-220%2B%20passing-success)](https://github.com/Hyphaeic/stok-core)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Complete reference implementation of Option Kernel Bellman Equations (OKBEs) for compositional, verifiable hierarchical planning in high-dimensional Markov Decision Processes.**
@@ -38,7 +37,7 @@ STOK-Core implements a **reward-free** reinforcement learning framework where po
 
 ```toml
 [dependencies]
-stok-core = { git = "https://github.com/your-repo/stok-core" }
+stok-core = { git = "https://github.com/Hyphaeic/stok-core" }
 burn = { version = "0.19", features = ["wgpu"] }
 ```
 
@@ -613,8 +612,6 @@ This implementation covers the **core theory** from Ringstrom & Schrater (2025).
 - **Neural network integration**: Learn world models
 - **Transfer learning**: Leverage sublimation and modularity
 
-See [EXTENSION_DISCUSSION.md](EXTENSION_DISCUSSION.md) for detailed analysis.
-
 ---
 
 ## Contributing
@@ -650,7 +647,7 @@ Special thanks to the [Burn](https://github.com/tracel-ai/burn) team for the exc
 ## Contact
 
 - **Paper**: [arXiv:2506.09499](https://arxiv.org/abs/2506.09499)
-- **Issues**: [GitHub Issues](https://github.com/your-repo/stok-core/issues)
+- **Issues**: [GitHub Issues](https://github.com/Hyphaeic/stok-core/issues)
 - **Email**: rings034@gmail.com (theory questions → paper authors)
 
 ---
