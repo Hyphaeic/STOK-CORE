@@ -1,12 +1,17 @@
-# STOK-Core: State-Time Option Kernels
+<div align="center">
+  <img src="https://raw.githubusercontent.com/Hyphaeic/.github/main/assets/logo.png" alt="Hyphaeic" width="80"/>
+  
+  # {PROJECT_NAME}
+  
+  [![Hyphaeic](https://img.shields.io/badge/HYPHAEIC-research-41efa4?style=flat-square&labelColor=1a1a1a)](https://github.com/Hyphaeic)
+  [![License](https://img.shields.io/badge/license-{LICENSE}-41efa4?style=flat-square&labelColor=1a1a1a)](LICENSE_URL)
+  [![Rust](https://img.shields.io/badge/rust-1.75+-41efa4?style=flat-square&logo=rust&logoColor=white&labelColor=1a1a1a)](https://www.rust-lang.org/)
+  
+  **{ONE_LINE_DESCRIPTION}**
+  
+  [Documentation]({DOCS_URL}) · [Paper]({PAPER_URL}) · [Examples]({EXAMPLES_URL})
 
-[![Paper](https://img.shields.io/badge/arXiv-2506.09499-b31b1b.svg)](https://arxiv.org/abs/2506.09499)
-[![Tests](https://img.shields.io/badge/tests-220%2B%20passing-success)](https://github.com/Hyphaeic/stok-core)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
-**Complete reference implementation of Option Kernel Bellman Equations (OKBEs) for compositional, verifiable hierarchical planning in high-dimensional Markov Decision Processes.**
-
-> Ringstrom, T., & Schrater, P. (2025). *A Unified Theory of Compositionality, Modularity, and Interpretability in Markov Decision Processes.* arXiv:2506.09499 [cs.LG]
+</div>
 
 ---
 
