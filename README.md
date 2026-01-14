@@ -1,15 +1,15 @@
 <div align="center">
   <img src="https://src.hyphaeic.com/website/img/logo.png" alt="Hyphaeic" width="80"/>
   
-  # {PROJECT_NAME}
+  # STOK-CORE
   
   [![Hyphaeic](https://img.shields.io/badge/HYPHAEIC-research-41efa4?style=flat-square&labelColor=1a1a1a)](https://github.com/Hyphaeic)
-  [![License](https://img.shields.io/badge/license-{LICENSE}-41efa4?style=flat-square&labelColor=1a1a1a)](LICENSE_URL)
+  [![License](https://img.shields.io/badge/license-{LICENSE}-41efa4?style=flat-square&labelColor=1a1a1a)](LICENSE)
   [![Rust](https://img.shields.io/badge/rust-1.75+-41efa4?style=flat-square&logo=rust&logoColor=white&labelColor=1a1a1a)](https://www.rust-lang.org/)
   
   **{ONE_LINE_DESCRIPTION}**
   
-  [Documentation]({DOCS_URL}) · [Paper]({PAPER_URL}) · [Examples]({EXAMPLES_URL})
+  [Documentation]({DOCS_URL}) · [Paper]({PAPER_URL}) · [Examples](examples)
 
 </div>
 
