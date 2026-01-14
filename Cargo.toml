@@ -6,6 +6,8 @@ description = "State-Time Option Kernels for compositional hierarchical planning
 repository = "https://github.com/Hyphaeic/STOK-CORE/"
 keywords = ["reinforcement-learning", "planning", "gpu", "stok"]
 categories = ["science", "algorithms"]
+# Since HPL is a custom license (not in the SPDX registry), use license-file
+license-file = "LICENSE"
 
 [dependencies]
 # Burn ML framework with WGPU backend
