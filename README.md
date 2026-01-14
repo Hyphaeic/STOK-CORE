@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://raw.githubusercontent.com/Hyphaeic/.github/main/assets/logo.png" alt="Hyphaeic" width="80"/>
+  <img src="https://src.hyphaeic.com/website/img/logo.png" alt="Hyphaeic" width="80"/>
   
   # {PROJECT_NAME}
   
