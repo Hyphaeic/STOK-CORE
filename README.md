@@ -7,17 +7,13 @@
   [![License](https://img.shields.io/badge/license-{LICENSE}-41efa4?style=flat-square&labelColor=1a1a1a)](LICENSE)
   [![Rust](https://img.shields.io/badge/rust-1.75+-41efa4?style=flat-square&logo=rust&logoColor=white&labelColor=1a1a1a)](https://www.rust-lang.org/)
   
-  **{ONE_LINE_DESCRIPTION}**
+  **STOK-Core implements a **reward-free** reinforcement learning framework where policies optimize **State-Time Option Kernels (STOKs)**—full probability distributions over goal-success and constraint-violation events—instead of scalar value functions.**
   
   [Documentation]({DOCS_URL}) · [Paper]({PAPER_URL}) · [Examples](examples)
 
 </div>
 
 ---
-
-## Overview
-
-STOK-Core implements a **reward-free** reinforcement learning framework where policies optimize **State-Time Option Kernels (STOKs)**—full probability distributions over goal-success and constraint-violation events—instead of scalar value functions.
 
 ### Why STOKs?
 
