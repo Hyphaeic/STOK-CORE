@@ -30,7 +30,6 @@
 
 - ✅ **All 4 theorems validated** with working examples
 - ✅ **220+ tests passing** (100% success rate, zero failures)
-- ✅ **86-5,070× memory reductions** demonstrated in practice
 - ✅ **GPU-accelerated** via [Burn](https://github.com/tracel-ai/burn) ML framework
 
 ---
