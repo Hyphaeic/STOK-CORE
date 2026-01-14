@@ -1,13 +1,13 @@
 <div align="center">
   <img src="https://src.hyphaeic.com/website/img/logo.png" alt="Hyphaeic" width="80"/>
   
-  # {PROJECT_NAME}
+  # STOK-CORE
   
   [![Hyphaeic](https://img.shields.io/badge/HYPHAEIC-research-41efa4?style=flat-square&labelColor=1a1a1a)](https://github.com/Hyphaeic)
   [![License](https://img.shields.io/badge/license-HPL-41efa4?style=flat-square&labelColor=1a1a1a)](https://github.com/hyphaeic/hpl)
   [![Rust](https://img.shields.io/badge/rust-1.75+-41efa4?style=flat-square&logo=rust&logoColor=white&labelColor=1a1a1a)](https://www.rust-lang.org/)
   
-  **{ONE_LINE_DESCRIPTION}**
+  **STOK-Core implements a **reward-free** reinforcement learning framework where policies optimize **State-Time Option Kernels (STOKs)**—full probability distributions over goal-success and constraint-violation events—instead of scalar value functions.**
   
   Documentation: `cargo doc --open` · [Paper]({https://arxiv.org/abs/2506.09499}) · [Examples](examples)
   
