@@ -6,10 +6,12 @@ Thank you for your interest in contributing to STOK-Core, the reference implemen
 
 ## 🎯 Project Status
 
-**STOK-Core is a complete reference implementation** (100/100 paper parity) of:
-> Ringstrom, T., & Schrater, P. (2025). *A Unified Theory of Compositionality, Modularity, and Interpretability in Markov Decision Processes.* arXiv:2506.09499
+STOK-Core implements:
+> Ringstrom, T., & Schrater, P. (2025). *A Unified Theory of Compositionality, Modularity, and Interpretability in Markov Decision Processes.* arXiv:2506.09499 — local PDF in `docs/references/ringstomcompositionality.pdf`.
 
-All core algorithms, theorems, and examples are implemented and validated.
+**For active development scope and current parity status, see [`docs/dev/PAPER_PDF_TASKBOARD.md`](docs/dev/PAPER_PDF_TASKBOARD.md).** That board is the only authoritative source for what is done versus open. Older "100/100" / "victory" / "score" docs (now under [`docs/archive/legacy_status_2026/`](docs/archive/legacy_status_2026/)) reflect a self-assessment that pre-dated the formal traceability audit and should NOT be used as implementation authority.
+
+The companion docs under `docs/dev/PAPER_*.md` (traceability matrix, paper-vs-repo assumptions, acceptance checklist, API audit) are the agent-facing detail behind each task board entry.
 
 ---
 
@@ -174,11 +176,12 @@ STOK-Core prioritizes **correctness over performance**:
 
 ### Test Organization
 
-- **Unit tests**: In same file as implementation (`mod tests { ... }`)
-- **Integration tests**: Cross-module workflows
-- **Examples**: Full application scenarios (must run successfully!)
+- **Unit tests**: In the same file as the implementation (`#[cfg(test)] mod tests { ... }`)
+- **Integration tests**: cross-module workflows under `tests/<topic>_tests.rs`. Recently added: `tests/stok_tests.rs` (PP-105 invariants), `tests/composition_tests.rs` (PP-203 Eq [18-19]), `tests/sublimation_tests.rs` (PP-403/404 Theorem 2.4).
+- **Examples**: full application scenarios (must run successfully).
+- **Theorem-style tests**: when implementing a theorem, add a test that names the equation/theorem it pins (see `CHK-*` entries in `docs/dev/PAPER_ACCEPTANCE_CHECKLIST.md` for what counts as "passing").
 
-**Standard**: 220+ tests, 0 failures. New code must maintain this.
+**Standard**: 250+ tests, 0 failures. New code must maintain this.
 
 ---
 
@@ -275,20 +278,17 @@ cargo test --features cuda
 
 ## 🎯 Roadmap
 
-### Current (1.0.0 - Complete!)
-- ✅ All 4 theorems
-- ✅ All core equations
-- ✅ 4 working examples
-- ✅ 220+ tests
+### Active scope
+See [`docs/dev/PAPER_PDF_TASKBOARD.md`](docs/dev/PAPER_PDF_TASKBOARD.md). Milestones M0, M1, M2, M4 are complete; M3 (factorization), M5 (Goal Kernel / Plan Kernel), M6 (Algorithm 2), and M7 (theorem option-set builders + final report) are the open work.
 
-### Potential Future Work
-- Product-space tree search
+### Out of scope
+Anything not on the PP-XXX board. In particular:
+- Empowerment / preference construction (paper Section 3.C is discussion only)
+- Real-time runtime (STOK-RT) and telemetry architecture
 - Sparse tensor support
-- Empowerment implementation
-- Visualization tools
-- Real-time runtime (STOK-RT)
+- Visualization tooling
 
-See [EXTENSION_DISCUSSION.md](EXTENSION_DISCUSSION.md) for detailed analysis.
+See [`docs/EXTENSION_DISCUSSION.md`](docs/EXTENSION_DISCUSSION.md) for the long-running list of post-paper extensions.
 
 ---
 

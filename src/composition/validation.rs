@@ -61,47 +61,36 @@ pub fn validate_composed_stok<B: Backend>(
         });
     }
 
-    // Check 3: If decomposed, verify η = η⁺ + η⁻
-    if let (Some(ref ep), Some(ref em)) = (&composed.eta_plus, &composed.eta_minus) {
-        let sum = ep.clone() + em.clone();
-        let decomp_diff: f32 = (composed.eta.clone() - sum)
-            .abs()
-            .max()
-            .into_scalar()
-            .elem();
-
-        if decomp_diff > tolerance {
-            return Err(StokError::NotNormalized {
-                sum: decomp_diff,
-                expected: 0.0,
-                tolerance,
-            });
-        }
+    // Check 3: η = η⁺ + η⁻ (Eq [17]). After PP-201 decomposition is always present.
+    let sum = composed.eta_plus.clone() + composed.eta_minus.clone();
+    let decomp_diff: f32 = (composed.eta.clone() - sum).abs().max().into_scalar().elem();
+    if decomp_diff > tolerance {
+        return Err(StokError::NotNormalized {
+            sum: decomp_diff,
+            expected: 0.0,
+            tolerance,
+        });
     }
 
-    // Check 4: κ consistency (if decomposed)
-    if let Some(ref eta_plus) = composed.eta_plus {
-        // Sum over time (dim 2) then final states (dim 1)
-        // eta_plus [S, S, T] -> sum_dim(2) -> [S, S] -> sum_dim(1) -> [S]
-        let kappa_from_eta = eta_plus
-            .clone()
-            .sum_dim(2)
-            .squeeze::<2>() // [S, S, T] -> [S, S]
-            .sum_dim(1)
-            .squeeze::<1>(); // [S, S] -> [S]
-        let kappa_diff: f32 = (composed.kappa.clone() - kappa_from_eta)
-            .abs()
-            .max()
-            .into_scalar()
-            .elem();
-
-        if kappa_diff > tolerance {
-            return Err(StokError::NotNormalized {
-                sum: kappa_diff,
-                expected: 0.0,
-                tolerance,
-            });
-        }
+    // Check 4: κ = Σ η⁺ (Eq [15]).
+    let kappa_from_eta = composed
+        .eta_plus
+        .clone()
+        .sum_dim(2)
+        .squeeze::<2>()
+        .sum_dim(1)
+        .squeeze::<1>();
+    let kappa_diff: f32 = (composed.kappa.clone() - kappa_from_eta)
+        .abs()
+        .max()
+        .into_scalar()
+        .elem();
+    if kappa_diff > tolerance {
+        return Err(StokError::NotNormalized {
+            sum: kappa_diff,
+            expected: 0.0,
+            tolerance,
+        });
     }
 
     Ok(())
@@ -298,8 +287,8 @@ mod tests {
 
         let composed = ComposedSTOK {
             eta: eta_plus.clone(),
-            eta_plus: Some(eta_plus),
-            eta_minus: Some(Tensor::zeros([n_states, n_states, max_time], &device)),
+            eta_plus,
+            eta_minus: Tensor::zeros([n_states, n_states, max_time], &device),
             kappa: Tensor::ones([n_states], &device),
             n_states,
             max_time,
@@ -320,9 +309,9 @@ mod tests {
 
         // Create composed with higher κ than source (invalid)
         let composed: ComposedSTOK<DefaultBackend> = ComposedSTOK {
+            eta_plus: Tensor::zeros([3, 3, 9], &device),
+            eta_minus: Tensor::zeros([3, 3, 9], &device),
             eta: Tensor::zeros([3, 3, 9], &device),
-            eta_plus: None,
-            eta_minus: None,
             kappa: Tensor::ones([3], &device), // Higher than stok1.kappa (zeros)
             n_states: 3,
             max_time: 9,

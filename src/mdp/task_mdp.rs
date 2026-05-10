@@ -3,24 +3,44 @@
 //! A Task MDP extends standard MDPs with explicit goal and constraint functions,
 //! enabling feasibility-aware planning per Ringstrom & Schrater (2025).
 //!
-//! # Mathematical Definition
+//! # Mathematical Definition (PDF Definition 1.1, page 3)
 //!
-//! A Task MDP is defined as M = ⟨X, A, P, f_g, f_c⟩ where:
-//! - X: State space (|X| = n_states)
-//! - A: Action space (|A| = n_actions)
-//! - P(x'|x,a): Transition dynamics (row-stochastic)
-//! - f_g(x,a) ∈ [0,1]: Goal satisfaction probability
-//! - f_c(x,a) ∈ [0,1]: Constraint satisfaction probability
+//! A Task MDP is defined as `M = ⟨X, A, P, f_g, f_c⟩` where:
+//! - `X`: state space (`|X| = n_states`)
+//! - `A`: action space (`|A| = n_actions`)
+//! - `P(x'|x, a)`: transition dynamics (row-stochastic)
+//! - `f_g(x, a) ∈ [0, 1]`: goal satisfaction probability
+//! - `f_c(x, a) ∈ [0, 1]`: probability that the constraint is *not* violated
+//!   (`f_c = 1` is safe, `f_c = 0` is a definite violation)
 //!
-//! # Derived Functions
+//! # Derived Functions (PDF Section 1.D, page 3)
 //!
-//! From f_g and f_c, we derive (used in κ-OKBE, Equation [7]):
-//! - f_1 = f_g × f_c: Achievement function (goal AND constraint satisfied)
-//! - f_2 = (1 - f_g) × f_c: Continuation function (NOT goal AND constraint)
+//! From `f_g` and `f_c` we derive the achievement and continuation functions
+//! used by the κ-OKBE (Eq [7]) and η-OKBEs (Eqs [9-12]):
+//! - `f_1 = f_g · f_c`: **achievement function** — joint event "goal succeeded
+//!   AND constraint not violated"
+//! - `f_2 = (1 - f_g) · f_c`: **continuation function** — joint event "goal not
+//!   yet succeeded AND constraint not violated"
+//! - `1 - f_c`: implicit **constraint-violation** termination probability
+//!
+//! At any `(x, a)`, exactly one of three events occurs:
+//! `f_1(x, a) + f_2(x, a) + (1 - f_c(x, a)) = 1`. This is the partition of unity
+//! that the OKBEs build on.
+//!
+//! # The Third Termination Condition
+//!
+//! Beyond goal-success (`f_1`) and constraint-violation (`1 - f_c`), the paper
+//! specifies a third policy termination condition: an option also terminates at
+//! a state `x` where the policy `π*` is defined to be infeasible
+//! (`κ*(x) < threshold`). This third condition is **not** carried by `f_g`,
+//! `f_c`, `f_1`, or `f_2`; it is folded into η⁻ at the boundary via Eq [12]
+//! (`𝟙̄_κ(x_i)·δ_ij`), implemented in `crate::solver::stok_construction::compute_eta_minus_boundary`.
 //!
 //! # Reference
 //!
-//! Ringstrom, T., & Schrater, P. (2025). Section 2: "Options Kernels and OKBEs"
+//! Ringstrom, T. & Schrater, P. (2025). "A Unified Theory of Compositionality,
+//! Modularity, and Interpretability in MDPs", Section 1 (Task Markov Decision
+//! Process), Definition 1.1 and Section 1.D. PDF: `docs/references/ringstomcompositionality.pdf`.
 
 use crate::types::{MDPDimensions, StokError, DEFAULT_PROBABILITY_TOLERANCE};
 use burn::prelude::*;
@@ -87,22 +107,30 @@ impl<B: Backend> TaskMDP<B> {
 
     /// Create a new TaskMDP with validation.
     ///
-    /// Validates tensor shapes and computes derived functions f_1 and f_2.
+    /// Implements PDF Definition 1.1 (page 3): `M = ⟨X, A, P, f_g, f_c⟩`.
+    /// Validates tensor shapes and eagerly computes the derived achievement
+    /// and continuation functions per PDF Section 1.D:
+    ///
+    /// - `f_1 = f_g · f_c` (achievement: goal succeeded AND constraint not violated)
+    /// - `f_2 = (1 - f_g) · f_c` (continuation: not yet succeeded AND not violated)
+    ///
+    /// At each `(x, a)` the partition of unity holds:
+    /// `f_1 + f_2 + (1 - f_c) = 1`.
+    ///
+    /// This constructor does NOT enforce row-stochasticity of `P` or `[0, 1]`
+    /// bounds on `f_g` / `f_c` — call [`Self::validate`] for those checks.
     ///
     /// # Arguments
     ///
-    /// * `transition` - Transition tensor P(x'|x,a), shape [S, A, S]
-    /// * `goal_fn` - Goal function f_g(x,a), shape [S, A]
-    /// * `constraint_fn` - Constraint function f_c(x,a), shape [S, A]
-    /// * `max_time` - Maximum time horizon for STOK computation
-    ///
-    /// # Returns
-    ///
-    /// `Ok(TaskMDP)` if shapes are valid, `Err(StokError)` otherwise.
+    /// * `transition` — `P(x'|x, a)`, shape `[S, A, S]`
+    /// * `goal_fn` — `f_g(x, a)`, shape `[S, A]`
+    /// * `constraint_fn` — `f_c(x, a)`, shape `[S, A]`
+    /// * `max_time` — maximum time horizon for downstream STOK computation
     ///
     /// # Errors
     ///
-    /// - `StokError::DimensionMismatch` if tensor shapes are inconsistent
+    /// `StokError::DimensionMismatch` if tensor shapes are inconsistent.
+    /// `StokError::InvalidDimension` if `max_time == 0`.
     pub fn new(
         transition: Tensor<B, 3>,
         goal_fn: Tensor<B, 2>,
@@ -802,5 +830,145 @@ mod tests {
         let f2_data: Vec<f32> = mdp.f2.into_data().to_vec().unwrap();
         assert!(f1_data.iter().all(|&v| v == 0.0));
         assert!(f2_data.iter().all(|&v| v == 0.0));
+    }
+
+    // ========================================================================
+    // PP-101: Direct Definition 1.1 / Section 1.D semantic tests
+    // ========================================================================
+    //
+    // These tests verify the f_1 / f_2 / (1 - f_c) partition of unity that
+    // every Bellman backup downstream relies on.
+
+    /// Build a 2-state, 2-action TaskMDP with explicitly provided f_g and f_c
+    /// values so we can probe the f_1, f_2, (1 - f_c) partition directly.
+    fn make_partition_test_mdp(
+        device: &<DefaultBackend as burn::tensor::backend::Backend>::Device,
+        fg: [f32; 4],
+        fc: [f32; 4],
+    ) -> TaskMDP<DefaultBackend> {
+        // Trivial uniform transition (irrelevant for the partition test, but
+        // must be row-stochastic so validate() passes).
+        let trans_data = vec![0.5f32; 2 * 2 * 2];
+        let trans: Tensor<DefaultBackend, 3> =
+            Tensor::<DefaultBackend, 1>::from_floats(trans_data.as_slice(), device)
+                .reshape([2, 2, 2]);
+
+        let goal: Tensor<DefaultBackend, 2> =
+            Tensor::<DefaultBackend, 1>::from_floats(fg.as_slice(), device).reshape([2, 2]);
+        let constraint: Tensor<DefaultBackend, 2> =
+            Tensor::<DefaultBackend, 1>::from_floats(fc.as_slice(), device).reshape([2, 2]);
+
+        TaskMDP::<DefaultBackend>::new(trans, goal, constraint, 5)
+            .expect("valid TaskMDP for partition test")
+    }
+
+    /// PP-101 / CHK-Def1.1: at every (x, a), f_1 + f_2 + (1 - f_c) = 1.
+    /// This is the partition over termination/continuation events used by Eq [7].
+    #[test]
+    fn test_partition_of_unity_stochastic() {
+        let device = default_device();
+        // Mix of stochastic f_g, f_c values (none at the {0, 1} corners).
+        let fg = [0.3, 0.7, 0.5, 0.0]; // (0,0)=0.3 (0,1)=0.7 (1,0)=0.5 (1,1)=0.0
+        let fc = [0.8, 0.6, 0.4, 1.0];
+        let mdp = make_partition_test_mdp(&device, fg, fc);
+
+        let f1: Vec<f32> = mdp.f1.clone().into_data().to_vec().unwrap();
+        let f2: Vec<f32> = mdp.f2.clone().into_data().to_vec().unwrap();
+
+        for sa in 0..4 {
+            let parition_sum = f1[sa] + f2[sa] + (1.0 - fc[sa]);
+            assert!(
+                (parition_sum - 1.0).abs() < 1e-6,
+                "Partition of unity broken at sa={}: f_1={}, f_2={}, 1-f_c={}, sum={}",
+                sa,
+                f1[sa],
+                f2[sa],
+                1.0 - fc[sa],
+                parition_sum
+            );
+        }
+    }
+
+    /// PP-101: explicit numeric check for the canonical (f_g=0.3, f_c=0.7) case
+    /// from the doc — f_1=0.21, f_2=0.49, (1-f_c)=0.3, sum=1.0.
+    #[test]
+    fn test_partition_explicit_values() {
+        let device = default_device();
+        let fg = [0.3, 0.3, 0.3, 0.3];
+        let fc = [0.7, 0.7, 0.7, 0.7];
+        let mdp = make_partition_test_mdp(&device, fg, fc);
+
+        let f1: Vec<f32> = mdp.f1.into_data().to_vec().unwrap();
+        let f2: Vec<f32> = mdp.f2.into_data().to_vec().unwrap();
+
+        for sa in 0..4 {
+            assert!((f1[sa] - 0.21).abs() < 1e-6, "f_1 mismatch at sa={}", sa);
+            assert!((f2[sa] - 0.49).abs() < 1e-6, "f_2 mismatch at sa={}", sa);
+        }
+    }
+
+    /// PP-101: when the constraint is definitely violated (f_c = 0), both f_1
+    /// and f_2 are 0 regardless of f_g — only the (1 - f_c) = 1 termination
+    /// fires. This is the corner case Eq [12]'s constraint-violation branch
+    /// relies on.
+    #[test]
+    fn test_constraint_zero_blocks_both_f1_and_f2() {
+        let device = default_device();
+        // Vary f_g across {0, 0.5, 1} but keep f_c = 0 — f_1 and f_2 must be 0.
+        let fg = [0.0, 0.5, 1.0, 0.7];
+        let fc = [0.0, 0.0, 0.0, 0.0];
+        let mdp = make_partition_test_mdp(&device, fg, fc);
+
+        let f1: Vec<f32> = mdp.f1.into_data().to_vec().unwrap();
+        let f2: Vec<f32> = mdp.f2.into_data().to_vec().unwrap();
+
+        for sa in 0..4 {
+            assert_eq!(
+                f1[sa], 0.0,
+                "f_1 should be 0 when f_c=0 (sa={}, f_g={})",
+                sa, fg[sa]
+            );
+            assert_eq!(
+                f2[sa], 0.0,
+                "f_2 should be 0 when f_c=0 (sa={}, f_g={})",
+                sa, fg[sa]
+            );
+        }
+    }
+
+    /// PP-101: at a deterministic goal state (f_g=1, f_c=1) the achievement
+    /// event fires deterministically — f_1=1, f_2=0, no constraint violation.
+    #[test]
+    fn test_deterministic_goal_state() {
+        let device = default_device();
+        let fg = [1.0, 1.0, 1.0, 1.0];
+        let fc = [1.0, 1.0, 1.0, 1.0];
+        let mdp = make_partition_test_mdp(&device, fg, fc);
+
+        let f1: Vec<f32> = mdp.f1.into_data().to_vec().unwrap();
+        let f2: Vec<f32> = mdp.f2.into_data().to_vec().unwrap();
+
+        for sa in 0..4 {
+            assert_eq!(f1[sa], 1.0);
+            assert_eq!(f2[sa], 0.0);
+        }
+    }
+
+    /// PP-101: at a "free continuation" state (f_g=0, f_c=1) the option
+    /// continues with probability 1 — f_1=0, f_2=1.
+    #[test]
+    fn test_free_continuation_state() {
+        let device = default_device();
+        let fg = [0.0, 0.0, 0.0, 0.0];
+        let fc = [1.0, 1.0, 1.0, 1.0];
+        let mdp = make_partition_test_mdp(&device, fg, fc);
+
+        let f1: Vec<f32> = mdp.f1.into_data().to_vec().unwrap();
+        let f2: Vec<f32> = mdp.f2.into_data().to_vec().unwrap();
+
+        for sa in 0..4 {
+            assert_eq!(f1[sa], 0.0);
+            assert_eq!(f2[sa], 1.0);
+        }
     }
 }

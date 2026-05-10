@@ -14,23 +14,97 @@
   
   [HPL License](https://github.com/hyphaeic/hpl) · [Local License](LICENSE)
 
+<<<<<<< HEAD
 </div>
 
 ---
 
+=======
+[![Paper](https://img.shields.io/badge/arXiv-2506.09499-b31b1b.svg)](https://arxiv.org/abs/2506.09499)
+[![Tests](https://img.shields.io/badge/tests-280%2B%20passing-success)](https://github.com/Hyphaeic/stok-core)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**A working reference implementation of the State-Time Option Kernel core from
+Ringstrom & Schrater (2025), built to demonstrate that the Option Kernel
+Bellman Equation (OKBE) formulation works as a reward-free learning primitive
+on general well-formed inputs.** Per-item paper-parity verdicts in
+[`docs/assessments/LOCAL_PDF_PARITY_REPORT.md`](docs/assessments/LOCAL_PDF_PARITY_REPORT.md);
+active scope in
+[`docs/dev/PAPER_PDF_TASKBOARD.md`](docs/dev/PAPER_PDF_TASKBOARD.md).
+
+> Ringstrom, T., & Schrater, P. (2025). *A Unified Theory of Compositionality, Modularity, and Interpretability in Markov Decision Processes.* arXiv:2506.09499 [cs.LG]
+
+---
+
+## Scope
+
+STOK-Core is the **kernel layer**: the OKBE / STOK / SOK / Goal Kernel /
+Plan Kernel mathematics, plus the Algorithm 1 (feasibility iteration) and
+Algorithm 2 (BFS option-sequence search) procedures that compose them.
+
+It is **not an agent**, and it is not the broader compositional architecture
+that turns these kernels into a self-sustaining entity (motivation
+construction, value-of-key, the autopoietic / homeostatic content from
+Ringstrom's 2023 thesis). The paper this implementation tracks is explicit
+about that: it formalizes the kernel-layer compositionality, factorization,
+and verifiability results; the agent-layer thesis content is referenced but
+not contributed by the paper itself.
+
+What you can do with this code today:
+- solve a Task MDP for `(κ*, π**, η⁺, η⁻)` per Algorithm 1,
+- compose STOKs / SOKs via Chapman-Kolmogorov,
+- factorize a high-dimensional product-space STOK per Theorem 2.1,
+- compute sublimated feasibility bounds per Theorem 2.4 for tree-search pruning,
+- assemble a paper-faithful Goal Kernel / Plan Kernel and run Algorithm 2
+  over composite states.
+
+What is **out of scope** (post-paper, separate document
+[`docs/EXTENSION_DISCUSSION.md`](docs/EXTENSION_DISCUSSION.md)):
+- empowerment as motivation; preference construction; intrinsic value,
+- real-time / online runtime (STOK-RT),
+- continuous state-spaces, sparse tensors, neural-net integration,
+- agent identity / homeostasis / the rest of the thesis.
+
+---
+
+## Overview
+
+STOK-Core replaces scalar value functions with **State-Time Option Kernels**
+— full probability distributions over goal-success and constraint-violation
+events. This is what makes the framework *reward-free*: policies optimize
+the probability of named events occurring at named times, not the
+expectation of an unnamed scalar.
+
+>>>>>>> 5357322 (feat: paper-parity audit M0-M7; general factorization + Algorithm 2)
 ### Why STOKs?
 
 **Compositional**: STOKs compose exactly via Chapman-Kolmogorov equations, enabling modular planning.
 
 **Verifiable**: STOKs record probabilities of semantically interpretable events (goal satisfaction, constraint violation) needed for formal verification.
 
-**Scalable**: Product-space STOKs factorize into low-dimensional components, avoiding the curse of dimensionality.
+**Scalable**: Product-space STOKs factorize into low-dimensional components, avoiding the curse of dimensionality of high-dimensional Bellman backups.
 
-### Key Results
+### Demonstration status (post M0–M7 audit)
 
+<<<<<<< HEAD
 - ✅ **All 4 theorems validated** with working examples
 - ✅ **220+ tests passing** (100% success rate, zero failures)
 - ✅ **GPU-accelerated** via [Burn](https://github.com/tracel-ai/burn) ML framework
+=======
+The audit's purpose was to make the kernel-layer demonstration credible —
+to ensure that the OKBE / STOK mathematics matches the paper item-by-item
+on general well-formed inputs.
+
+- ✅ **All 4 theorems implemented as first-class APIs** (`build_state_option_set` / `build_affordance_option_set` for Theorems 2.2/2.3; full Eq [23] factorization with TEF for Theorem 2.1; sublimation generic across HL cardinalities for Theorem 2.4).
+- ✅ **Algorithm 1 + Algorithm 2 paper-faithful** with composite search nodes and sublimation pruning.
+- ✅ **280+ tests passing** (0 failing) across inline + 6 integration test files, including direct-DP cross-checks against the factorization on small problems. See [`docs/assessments/VERIFICATION_RECORD.md`](docs/assessments/VERIFICATION_RECORD.md).
+- ✅ **86–5,070× memory reductions** demonstrated in examples (Theorem 2.1 in action on real product spaces).
+- ✅ **GPU-accelerated** via [Burn](https://github.com/tracel-ai/burn) ML framework.
+
+For "paper-faithful per item, with what caveats," walk
+[`docs/assessments/LOCAL_PDF_PARITY_REPORT.md`](docs/assessments/LOCAL_PDF_PARITY_REPORT.md)
+against the PDF.
+>>>>>>> 5357322 (feat: paper-parity audit M0-M7; general factorization + Algorithm 2)
 
 ---
 
@@ -526,20 +600,25 @@ cargo run --release --example honey_badger_3space
 
 ## Project Status
 
-### Test Coverage: 220+ Tests ✅
+### Test Coverage: 280+ Tests ✅
 
 ```bash
-test result: ok. 220 passed; 0 failed; 0 ignored
+test result: ok. 282 passed; 0 failed; 0 ignored
 ```
 
 **Coverage by module**:
-- Core theory: ~130 tests
-- Product-space: ~60 tests
-- Mode functions: 14 tests
-- Sublimation: 10 tests
-- Integration: ~8 tests
+- Core theory: ~140 tests (TaskMDP / OKBE / STOK construction / composition).
+- Product-space: ~60 tests (factorization, mode functions, affordances, SPK / CEF / TEF).
+- Sublimation: ~14 tests including non-binary HL coverage and direct-DP bound cross-check.
+- Integration: 32 tests across 6 files (`tests/stok_tests.rs`, `tests/composition_tests.rs`, `tests/factorization_tests.rs`, `tests/sublimation_tests.rs`, `tests/goal_kernel_tests.rs`, `tests/algorithm_2_tests.rs`).
 
-**All mathematical invariants validated!**
+**Paper-parity status**: all M0–M7 milestones complete. Two named follow-ups
+remain (PP-106 ν-uniform corner case in `extract_pi_time_minimizing`;
+success/failure CEF split for exact `feasibility_approx` under the general
+Theorem 2.1 path) — neither affects the kernel-layer demonstration on
+well-formed inputs. See
+[`docs/dev/PAPER_PDF_TASKBOARD.md`](docs/dev/PAPER_PDF_TASKBOARD.md) and
+[`docs/assessments/LOCAL_PDF_PARITY_REPORT.md`](docs/assessments/LOCAL_PDF_PARITY_REPORT.md).
 
 ---
 
@@ -671,18 +750,34 @@ stok-core/
 │   ├── types.rs      # Core types and errors
 │   └── lib.rs        # Public API
 ├── examples/
-│   ├── honey_badger_2space.rs        # Theorem 2.1 (86× reduction)
-│   ├── temperature_regulation.rs      # Mode switching (93× reduction)
-│   ├── logic_task_sublimation.rs      # Theorem 2.4 pruning
-│   └── honey_badger_3space.rs         # All theorems (5,070× reduction!)
-├── tests/
-│   └── (220+ tests in src/ modules)
+│   ├── honey_badger_2space.rs           # Theorem 2.1 (86× reduction)
+│   ├── temperature_regulation.rs        # Mode switching (93× reduction)
+│   ├── logic_task_sublimation.rs        # Theorem 2.4 pruning
+│   └── honey_badger_3space.rs           # All theorems (5,070× reduction!)
+├── tests/                                # Integration test suite
+│   ├── stok_tests.rs                    # PP-105 invariant tests (Σ η** = 1, κ = Σ η+)
+│   ├── composition_tests.rs             # PP-203 Eq [18-19] theorem-style
+│   ├── factorization_tests.rs           # PP-305 CHK-CO6.1 / CHK-T2.1 cross-checks
+│   ├── sublimation_tests.rs             # PP-403/404 Theorem 2.4 non-binary HL
+│   ├── goal_kernel_tests.rs             # PP-505 FactorizedGoalKernel + PlanKernel
+│   └── algorithm_2_tests.rs             # PP-605 Algorithm 2 regression tests
 ├── benches/
-│   └── feasibility_bench.rs          # Performance benchmarks
-└── docs/                              # Project documentation
-    ├── VICTORY_100_OF_100.md         # Achievement report
-    ├── PAPER_ALIGNMENT_ASSESSMENT.md # Theory-to-code mapping
-    └── EXTENSION_DISCUSSION.md       # Future work analysis
+│   └── feasibility_bench.rs             # Performance benchmarks
+└── docs/                                 # Project documentation
+    ├── README.md                        # Doc index
+    ├── dev/                             # Authoritative development docs
+    │   ├── PAPER_PDF_TASKBOARD.md       # PP-XXX dev scope
+    │   ├── PAPER_TRACEABILITY_MATRIX.md # paper item → code mapping
+    │   ├── PAPER_ASSUMPTIONS.md         # paper-backed vs repo-local
+    │   ├── PAPER_ACCEPTANCE_CHECKLIST.md# CHK-* pass conditions
+    │   └── PAPER_API_AUDIT.md           # public-symbol classification
+    ├── assessments/
+    │   ├── LOCAL_PDF_PARITY_REPORT.md   # per-item parity verdicts
+    │   └── VERIFICATION_RECORD.md       # exact test counts at parity-freeze
+    ├── architectures/thesis_breakdown.md# Ringstrom 2023 thesis content note
+    ├── EXTENSION_DISCUSSION.md          # post-paper research (out of scope)
+    ├── references/                      # paper + thesis PDFs
+    └── archive/legacy_status_2026/      # pre-audit "100/100" docs (NOT authoritative)
 ```
 
 ---
@@ -698,6 +793,12 @@ stok-core/
 
 ---
 
-**STOK-Core: Complete, validated, production-ready reference implementation of Option Kernel Bellman Equations.** 🎯
+**STOK-Core: a working reference for the kernel layer of a reward-free
+learning system.** It demonstrates that the OKBE / STOK formulation works
+on general well-formed inputs — the specific kernel-layer compositionality,
+factorization, and verifiability results from Ringstrom & Schrater (2025).
+Agent-level concerns (motivation, value-of-key, the self-sustaining
+compositional identity discussed in Ringstrom's 2023 thesis) are out of
+scope for this repository.
 
 *Implementing compositional, verifiable planning for high-dimensional MDPs without rewards.*

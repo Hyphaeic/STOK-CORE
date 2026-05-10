@@ -315,6 +315,14 @@ impl<B: Backend> FactorizedAffordance<B> {
         self.components.len()
     }
 
+    /// Number of HL actions in the specified HL space.
+    ///
+    /// Equal to `affordance.components[space_id].dims()[2]`. Used by sublimation
+    /// (PP-401) to derive cardinalities without hardcoding binary HL spaces.
+    pub fn n_hl_actions_for_space(&self, space_id: usize) -> usize {
+        self.hl_action_sizes[space_id]
+    }
+
     /// Get device
     pub fn device(&self) -> B::Device {
         self.components[0].device()

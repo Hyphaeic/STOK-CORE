@@ -1,50 +1,41 @@
 //! # Planning with Goal Kernels
 //!
-//! This module implements the planning interface for STOK-based control.
-//! It provides utilities for managing multiple goal-conditioned STOKs,
-//! querying feasibility, and searching for optimal option sequences.
+//! Two distinct API levels live here (PP-504):
 //!
-//! ## Key Components
+//! - **Reduced low-dimensional planning** (legacy / example-grade):
+//!   - [`GoalKernel`] — flat `HashMap<GoalId, STOKKernel>` for problems where
+//!     the planning state is just the BL state `x ∈ X`.
+//!   - [`tree_search`] / [`best_first_search`] — search over option sequences
+//!     using only flat BL state. Sublimation pruning is not yet wired in
+//!     (TODO at `tree_search.rs:272`, owned by PP-603).
 //!
-//! - **GoalKernel**: Manages a collection of STOKs for different goals
-//! - **Tree Search**: BFS and best-first search over option sequences
-//! - **Sampling**: Sample termination distributions from STOKs
-//! - **Plan**: Representation and validation of option sequences
+//! - **Paper-faithful planning** (M5+):
+//!   - [`FactorizedGoalKernel`] — Eq [24] Goal Kernel `G` carrying per-goal
+//!     `FactorizedSTOK`s, the affordance, and HL kernels for boundary updates.
+//!   - [`PlanKernel`] — m-fold composition `G_m` of the Goal Kernel under a
+//!     meta-policy, with deterministic and stochastic simulation.
 //!
-//! ## Example
-//!
-//! ```rust,ignore
-//! use stok_core::planning::{GoalKernel, tree_search, TreeSearchConfig};
-//!
-//! // Create goal kernel with multiple options
-//! let mut kernel = GoalKernel::new(n_states, device);
-//! kernel.add_goal(GoalId(0), stok1, "reach_waypoint", Some(10))?;
-//! kernel.add_goal(GoalId(1), stok2, "reach_goal", Some(20))?;
-//!
-//! // Search for plan
-//! let config = TreeSearchConfig {
-//!     max_depth: 5,
-//!     target_goal: Some(GoalId(1)),
-//!     ..Default::default()
-//! };
-//!
-//! let result = tree_search(&kernel, initial_state, config);
-//! if let Some(plan) = result.best_plan {
-//!     println!("Found plan with feasibility: {}", plan.feasibility);
-//! }
-//! ```
+//! Algorithm 2 (PP-601..605) will replace the reduced tree search with one
+//! that operates on the paper-faithful composite state via the
+//! `FactorizedGoalKernel` / `PlanKernel` pair.
 
 mod goal_kernel;
+mod option_set;
 mod plan;
 mod query;
 mod sampling;
 mod tree_search;
 
-pub use goal_kernel::{GoalInfo, GoalKernel};
-pub use plan::{Plan, PlanError, SimulatedTrajectory, SimulationResult, simulate_plan};
+pub use goal_kernel::{FactorizedGoalEntry, FactorizedGoalKernel, GoalInfo, GoalKernel};
+pub use option_set::{build_affordance_option_set, build_state_option_set};
+pub use plan::{
+    simulate_plan, Plan, PlanError, PlanKernel, PlanStep, PlanTrace, SimulatedTrajectory,
+    SimulationResult,
+};
 pub use query::PlanningQuery;
 pub use sampling::{STOKSampler, TerminationOutcome, sample_categorical};
 pub use tree_search::{
-    best_first_search, tree_search, SearchNode, SearchResult, SearchStats, SearchStrategy,
-    TreeSearchConfig,
+    algorithm_2_search, best_first_search, tree_search, Algorithm2Config, Algorithm2Node,
+    Algorithm2Plan, Algorithm2Result, Algorithm2Stats, SearchNode, SearchResult, SearchStats,
+    SearchStrategy, TreeSearchConfig,
 };

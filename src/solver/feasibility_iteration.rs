@@ -536,12 +536,27 @@ fn validate_kappa_bounds<B: Backend>(kappa: &Tensor<B, 1>) -> Result<(), StokErr
 
 /// Refine π among κ*-optimal actions by minimizing expected continuation time.
 ///
-/// This is the practical MVP version of the paper’s “minimize expected time” step
-/// in feasibility iteration (κ-OKBE then π-OKBE).
+/// Implements Eq [8]: π**(x) = argmin_{a ∈ A*_x} f_2(x, a) · E[(t_f + 1) · η+].
+/// We approximate `E[(t_f + 1) · η+]` with a ν-iteration that solves
+/// `ν(x) = 1 + f_2(x, π(x)) · E[ν(x')]` (the expected time to absorption under
+/// the current policy chain). When the chain is absorbing, ν matches the paper
+/// quantity. When it isn't, ν grows unboundedly — see the limitation below.
 ///
-/// We do a lightweight policy-iteration loop:
-/// 1) Fix π, solve ν from: ν(x) = 1 + f₂(x,π(x)) · E[ν(x′)]
-/// 2) Improve π(x) = argmin_{a ∈ A*_x} f₂(x,a) · E[ν(x′)]
+/// **PP-106 partial fix:** the argmin tie-break now uses f_2 as the primary key
+/// (`f_2 = 0` actions are immediate-termination per Eq [8] and dominate any
+/// further proxy). The ν proxy is the secondary key. This handles cases where
+/// some κ-optimal actions have `f_2 = 0` (immediate goal/constraint) and others
+/// don't.
+///
+/// **Known limitation (full PP-106 still open):** when *every* κ-optimal action
+/// at a state has the same f_2 AND the current policy creates a non-absorbing
+/// chain (so ν is uniform-large), neither key distinguishes the actions. The
+/// argmin then picks lowest index. A complete fix needs a global heuristic
+/// (e.g. shortest-path distance to a state where some action has f_1 > 0 or
+/// f_c < 1) that can break ties by structural progress rather than by ν or f_2
+/// alone. Current callers that hit this corner are typically degenerate (either
+/// the MDP truly has no path to termination, or every initial policy is
+/// recurrent) and surface as `check_policy_absorption_release` errors.
 fn extract_pi_time_minimizing<B: Backend>(
     kappa_star: &Tensor<B, 1>,
     mdp: &TaskMDP<B>,
@@ -576,6 +591,7 @@ fn extract_pi_time_minimizing<B: Backend>(
             &q_values,
             kappa_star,
             &time_proxy,
+            &mdp.f2,
             tie_tolerance,
             &device,
         );
@@ -627,11 +643,20 @@ fn solve_nu_for_policy<B: Backend>(
     nu
 }
 
-/// Select π(x) = argmin time_proxy(x,a) over κ*-optimal actions A*_x.
+/// Select π(x) over κ*-optimal actions A*_x using a lexicographic key:
+///   (1) primary: f_2(x, a) — actions with f_2 = 0 immediately terminate per
+///       Eq [8] (the product f_2 · E[(t_f+1)·η+] vanishes regardless of η+);
+///   (2) secondary: time_proxy(x, a) = f_2(x, a) · E[ν(x')], the ν-iteration
+///       proxy for E[(t_f+1)·η+] which is meaningful when the policy chain
+///       is absorbing.
+/// Combined into a single scalar `f_2 · BIG + time_proxy` so a single argmin
+/// over the κ-optimal mask yields the lexicographic winner. Non-optimal
+/// actions are masked to a huge sentinel value.
 fn argmin_time_among_kappa_optimal<B: Backend>(
     q_values: &Tensor<B, 2>,
     kappa_star: &Tensor<B, 1>,
     time_proxy: &Tensor<B, 2>,
+    f2: &Tensor<B, 2>,
     tie_tolerance: f32,
     device: &B::Device,
 ) -> Tensor<B, 1, Int> {
@@ -644,15 +669,19 @@ fn argmin_time_among_kappa_optimal<B: Backend>(
     let optimal_mask = q_values.clone().greater_equal(threshold);
     let optimal_mask_f: Tensor<B, 2> = optimal_mask.float();
 
-    // Non-optimal actions get huge time so they are never selected by min
-    let large_value: f32 = 1e10;
+    // Lexicographic combined key: f_2 dominates time_proxy. f_2 ∈ [0, 1], time_proxy
+    // is bounded above by ν_max which is O(max_nu_iters); BIG ≫ that range.
+    const BIG: f32 = 1.0e6;
+    let combined_key = f2.clone() * BIG + time_proxy.clone();
+
+    let large_value: f32 = 1.0e10;
     let large_tensor: Tensor<B, 2> = Tensor::full([s, a], large_value, device);
     let ones: Tensor<B, 2> = Tensor::ones([s, a], device);
 
-    let masked_time =
-        time_proxy.clone() * optimal_mask_f.clone() + large_tensor * (ones - optimal_mask_f);
+    let masked_key =
+        combined_key * optimal_mask_f.clone() + large_tensor * (ones - optimal_mask_f);
 
-    let (_, policy) = masked_time.min_dim_with_indices(1);
+    let (_, policy) = masked_key.min_dim_with_indices(1);
     policy.squeeze::<1>()
 }
 
@@ -930,5 +959,182 @@ mod tests {
             ConvergenceReason::MaxIterationsReached
         );
         assert_eq!(result.iterations(), 2);
+    }
+
+    // ========================================================================
+    // PP-103 / CHK-ALG1 stage 2: π-OKBE time-minimization on κ-tie cases
+    // ========================================================================
+
+    /// Build a 4-state TaskMDP where state 0 has two actions that BOTH achieve
+    /// κ = 1 but with different expected times to the goal. Action ordering
+    /// is deliberately reversed (action 0 = slow path, action 1 = fast path)
+    /// so a naive lowest-index or f_1-tiebreak rule would pick the WRONG
+    /// action — only paper-faithful Eq [8] time-minimization picks action 1.
+    ///
+    /// State graph (deterministic, 2 actions each):
+    ///   0 --a0--> 2 --*--> 1 --*--> 3 (goal)         path length 3
+    ///   0 --a1--> 1 --*--> 3 (goal)                  path length 2
+    fn make_kappa_tie_mdp(
+        device: &<DefaultBackend as Backend>::Device,
+    ) -> TaskMDP<DefaultBackend> {
+        let n = 4;
+        let a = 2;
+        let mut p = vec![0.0f32; n * a * n];
+        let idx = |s: usize, act: usize, sp: usize| s * a * n + act * n + sp;
+
+        // State 0: action 0 → 2 (slow), action 1 → 1 (fast)
+        p[idx(0, 0, 2)] = 1.0;
+        p[idx(0, 1, 1)] = 1.0;
+        // State 1: both actions → 3 (goal)
+        p[idx(1, 0, 3)] = 1.0;
+        p[idx(1, 1, 3)] = 1.0;
+        // State 2: both actions → 1
+        p[idx(2, 0, 1)] = 1.0;
+        p[idx(2, 1, 1)] = 1.0;
+        // State 3: absorbing under both actions
+        p[idx(3, 0, 3)] = 1.0;
+        p[idx(3, 1, 3)] = 1.0;
+
+        let trans: Tensor<DefaultBackend, 3> =
+            Tensor::<DefaultBackend, 1>::from_floats(p.as_slice(), device).reshape([n, a, n]);
+
+        // Goal at state 3 only.
+        let mut fg = vec![0.0f32; n * a];
+        fg[3 * a + 0] = 1.0;
+        fg[3 * a + 1] = 1.0;
+        let goal: Tensor<DefaultBackend, 2> =
+            Tensor::<DefaultBackend, 1>::from_floats(fg.as_slice(), device).reshape([n, a]);
+
+        // No constraints.
+        let constraint: Tensor<DefaultBackend, 2> = Tensor::ones([n, a], device);
+
+        TaskMDP::<DefaultBackend>::new(trans, goal, constraint, 10).expect("κ-tie MDP")
+    }
+
+    /// PP-103: at the κ-tie state 0, π** must select action 1 (the fast path).
+    /// A f_1-max or lowest-index tiebreak would pick action 0 — that would be
+    /// non-paper-faithful per Eq [8].
+    #[test]
+    fn test_pi_okbe_picks_time_minimizing_action_at_kappa_tie() {
+        let device = default_device();
+        let mdp = make_kappa_tie_mdp(&device);
+
+        let result =
+            feasibility_iteration(&mdp, FeasibilityIterationConfig::default()).unwrap();
+
+        let kappa: Vec<f32> = result.kernel.kappa.clone().into_data().to_vec().unwrap();
+        let policy: Vec<i32> = result.kernel.policy.clone().into_data().to_vec().unwrap();
+
+        // Sanity: state 0 is a κ-tie (both actions reach the goal with κ=1).
+        assert!(
+            approx_eq(kappa[0], 1.0, 1e-5),
+            "Setup invalid: state 0 should be feasible (κ=1), got {}",
+            kappa[0]
+        );
+
+        // The actual π-OKBE acceptance: π(0) = 1, the time-minimizing action.
+        assert_eq!(
+            policy[0], 1,
+            "π(0) should be 1 (fast path), got {} — Eq [8] time-min violated",
+            policy[0]
+        );
+    }
+
+    /// PP-106 partial fix: when one κ-optimal action has `f_2 = 0` (immediate
+    /// termination per Eq [8]) and another has `f_2 > 0`, the f_2 primary key
+    /// must select the immediate-termination action regardless of which has
+    /// the lower lexical index.
+    ///
+    /// Witness: 3-state MDP. State 0 has two actions:
+    ///   - action 0 (lower index): f_g = 0, f_c = 1 → f_2 = 1, transitions to
+    ///     state 1 from which a multi-step path eventually reaches the goal.
+    ///   - action 1: f_g = 1, f_c = 1 → f_2 = 0, immediate goal-success at
+    ///     state 0 itself.
+    /// Both actions give κ = 1 → κ-tied. Per Eq [8] we want π(0) = 1 (immediate
+    /// success). A naive lowest-index tiebreak would pick action 0.
+    #[test]
+    fn test_pi_okbe_f2_tiebreak_prefers_immediate_termination() {
+        let device = default_device();
+
+        // 3 states, 2 actions.
+        let n = 3;
+        let a = 2;
+        let mut p = vec![0.0f32; n * a * n];
+        let idx = |s: usize, act: usize, sp: usize| s * a * n + act * n + sp;
+        // State 0: action 0 → state 1, action 1 → state 0 (self-loop, but
+        // immediately terminates due to f_g = 1 so f_2 = 0).
+        p[idx(0, 0, 1)] = 1.0;
+        p[idx(0, 1, 0)] = 1.0;
+        // State 1: both actions → state 2 (goal).
+        p[idx(1, 0, 2)] = 1.0;
+        p[idx(1, 1, 2)] = 1.0;
+        // State 2: absorbing under both actions.
+        p[idx(2, 0, 2)] = 1.0;
+        p[idx(2, 1, 2)] = 1.0;
+        let trans: Tensor<DefaultBackend, 3> =
+            Tensor::<DefaultBackend, 1>::from_floats(p.as_slice(), &device).reshape([n, a, n]);
+
+        // f_g: state 0 action 1 has goal (f_g = 1), state 2 (any action) has goal.
+        let mut fg = vec![0.0f32; n * a];
+        fg[0 * a + 1] = 1.0;
+        fg[2 * a + 0] = 1.0;
+        fg[2 * a + 1] = 1.0;
+        let goal: Tensor<DefaultBackend, 2> =
+            Tensor::<DefaultBackend, 1>::from_floats(fg.as_slice(), &device).reshape([n, a]);
+        let constraint: Tensor<DefaultBackend, 2> = Tensor::ones([n, a], &device);
+        let mdp =
+            TaskMDP::<DefaultBackend>::new(trans, goal, constraint, 10).expect("witness MDP");
+
+        let result =
+            feasibility_iteration(&mdp, FeasibilityIterationConfig::default()).unwrap();
+
+        let policy: Vec<i32> = result.kernel.policy.into_data().to_vec().unwrap();
+
+        // π(0) must be 1 (immediate termination via f_2 = 0), not 0 (longer path).
+        assert_eq!(
+            policy[0], 1,
+            "PP-106: f_2 primary key must pick the immediate-termination action; got {}",
+            policy[0]
+        );
+    }
+
+    /// PP-103: confirm that the deprecated `bellman_backup_kappa_with_tiebreak`
+    /// would have picked the wrong action on this κ-tie problem (action 0 by
+    /// lowest-index fallthrough). This documents WHY the deprecated function
+    /// is unsafe and pins the active path away from it.
+    ///
+    /// On `make_kappa_tie_mdp`, both actions at state 0 have f_1 = 0 (it is
+    /// not a goal state), so the f_1-max tiebreak degenerates to argmax over
+    /// a uniform vector — implementation falls back to lowest index = 0. We
+    /// exercise this directly so any future re-introduction of f_1-tiebreak
+    /// in the active path will be visible.
+    #[test]
+    #[allow(deprecated)]
+    fn test_deprecated_tiebreak_picks_wrong_action_at_kappa_tie() {
+        use crate::solver::bellman::bellman_backup_kappa_with_tiebreak;
+
+        let device = default_device();
+        let mdp = make_kappa_tie_mdp(&device);
+
+        // First converge κ via the standard backup so we have κ* to feed in.
+        let mut kappa: Tensor<DefaultBackend, 1> =
+            Tensor::zeros([mdp.n_states()], &device);
+        for _ in 0..50 {
+            let (kappa_new, _) = bellman_backup_kappa(&kappa, &mdp);
+            kappa = kappa_new;
+        }
+
+        let (_, deprecated_policy) =
+            bellman_backup_kappa_with_tiebreak(&kappa, &mdp, 1e-6);
+        let dp_vec: Vec<i32> = deprecated_policy.into_data().to_vec().unwrap();
+
+        // Document that the deprecated tiebreak picks the slow path here.
+        // The active path under feasibility_iteration() must NOT match it.
+        assert_eq!(
+            dp_vec[0], 0,
+            "If this changes, re-evaluate whether the deprecated function is \
+             actually doing what its name claims; currently it lowest-indexes \
+             on f_1-ties and that gives action 0 here."
+        );
     }
 }

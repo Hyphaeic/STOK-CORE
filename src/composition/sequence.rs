@@ -133,8 +133,8 @@ pub fn compose_sequence<B: Backend>(
 
         return Ok(ComposedSTOK {
             eta,
-            eta_plus: Some(stok.eta_plus.clone()),
-            eta_minus: Some(stok.eta_minus.clone()),
+            eta_plus: stok.eta_plus.clone(),
+            eta_minus: stok.eta_minus.clone(),
             kappa,
             n_states: stok.n_states(),
             max_time: stok.max_time(),
@@ -322,5 +322,156 @@ mod tests {
             .into_scalar()
             .elem();
         assert!(diff < 1e-5);
+    }
+
+    // ========================================================================
+    // PP-202: 3+ option chain semantic preservation
+    // ========================================================================
+
+    /// Build a deterministic 3-state STOK that succeeds at the goal state with
+    /// time = 1, fails at infeasible state with time = 0. Used as a building
+    /// block for chain-composition tests.
+    fn build_test_stok(
+        device: &<crate::backend::DefaultBackend as Backend>::Device,
+    ) -> STOKKernel<crate::backend::DefaultBackend> {
+        use crate::backend::DefaultBackend;
+        use crate::mdp::TaskMDP;
+        use crate::solver::{feasibility_iteration, FeasibilityIterationConfig};
+
+        let mdp: TaskMDP<DefaultBackend> = TaskMDP::simple_chain(4, 8, device);
+        let result =
+            feasibility_iteration(&mdp, FeasibilityIterationConfig::default()).unwrap();
+        result.kernel
+    }
+
+    /// PP-202: 3-option chain. After PP-201's lossless conversion, the
+    /// sequence composition must preserve `eta = eta_plus + eta_minus` and
+    /// `kappa = Σ eta_plus` end-to-end (no semantic collapse).
+    #[test]
+    fn test_compose_sequence_three_options_preserves_decomposition() {
+        use burn::prelude::ElementConversion;
+
+        let device = default_device();
+        let stok = build_test_stok(&device);
+
+        let sequence = OptionSequence::new()
+            .then(stok.clone(), Some("o1"))
+            .then(stok.clone(), Some("o2"))
+            .then(stok, Some("o3"));
+
+        let composed = compose_sequence(&sequence).unwrap();
+
+        // Decomposition identity (Eq [17]): eta = eta_plus + eta_minus exactly.
+        let sum = composed.eta_plus.clone() + composed.eta_minus.clone();
+        let decomp_diff: f32 = (composed.eta.clone() - sum)
+            .abs()
+            .max()
+            .into_scalar()
+            .elem();
+        assert!(
+            decomp_diff < 1e-4,
+            "3-chain decomposition violated: max |η - (η+ + η-)| = {}",
+            decomp_diff
+        );
+
+        // κ-η consistency (Eq [15]): kappa = Σ eta_plus.
+        let kappa_from_eta: Vec<f32> = composed
+            .eta_plus
+            .clone()
+            .sum_dim(2)
+            .squeeze::<2>()
+            .sum_dim(1)
+            .squeeze::<1>()
+            .into_data()
+            .to_vec()
+            .unwrap();
+        let kappa: Vec<f32> = composed.kappa.clone().into_data().to_vec().unwrap();
+        for i in 0..kappa.len() {
+            assert!(
+                (kappa[i] - kappa_from_eta[i]).abs() < 1e-4,
+                "3-chain κ-η consistency at state {}: κ={}, Σ η+ = {}",
+                i,
+                kappa[i],
+                kappa_from_eta[i]
+            );
+        }
+    }
+
+    /// PP-202: 4-option chain. Same invariants on a longer chain — guards
+    /// against compounding rounding error from the iterated convolution.
+    #[test]
+    fn test_compose_sequence_four_options_normalizes() {
+        use burn::prelude::ElementConversion;
+
+        let device = default_device();
+        let stok = build_test_stok(&device);
+
+        let sequence = OptionSequence::new()
+            .then(stok.clone(), Some("o1"))
+            .then(stok.clone(), Some("o2"))
+            .then(stok.clone(), Some("o3"))
+            .then(stok, Some("o4"));
+
+        let composed = compose_sequence(&sequence).unwrap();
+
+        // Total mass should still be 1 per Eq [29] (allowing slack for the
+        // truncation of the convolution at composed.max_time).
+        let total_mass: Vec<f32> = composed
+            .eta
+            .clone()
+            .sum_dim(2)
+            .squeeze::<2>()
+            .sum_dim(1)
+            .squeeze::<1>()
+            .into_data()
+            .to_vec()
+            .unwrap();
+
+        for (i, &m) in total_mass.iter().enumerate() {
+            assert!(
+                (m - 1.0).abs() < 1e-3,
+                "4-chain total mass at state {} = {}, expected 1.0",
+                i,
+                m
+            );
+        }
+    }
+
+    /// PP-202: round-tripping a ComposedSTOK through to_stok_kernel and back
+    /// into another compose_stoks must be loss-free (the lossy fallback that
+    /// existed before PP-201 was the failure mode this guards against).
+    #[test]
+    fn test_compose_to_stok_kernel_roundtrip_lossless() {
+        use crate::composition::compose_stoks;
+        use burn::prelude::ElementConversion;
+
+        let device = default_device();
+        let stok = build_test_stok(&device);
+
+        let pair = compose_stoks(&stok, &stok).unwrap();
+        let intermediate = pair.to_stok_kernel().unwrap();
+
+        // After round-trip, η+/η- must be exactly preserved (no Option-fallback
+        // dumping all mass into η+).
+        let plus_diff: f32 = (intermediate.eta_plus.clone() - pair.eta_plus.clone())
+            .abs()
+            .max()
+            .into_scalar()
+            .elem();
+        let minus_diff: f32 = (intermediate.eta_minus.clone() - pair.eta_minus.clone())
+            .abs()
+            .max()
+            .into_scalar()
+            .elem();
+        assert!(
+            plus_diff < 1e-7,
+            "to_stok_kernel must be lossless on η+, got diff = {}",
+            plus_diff
+        );
+        assert!(
+            minus_diff < 1e-7,
+            "to_stok_kernel must be lossless on η-, got diff = {}",
+            minus_diff
+        );
     }
 }

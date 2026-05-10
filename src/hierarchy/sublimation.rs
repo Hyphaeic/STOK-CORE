@@ -268,86 +268,84 @@ impl<B: Backend> SublimatedTMDP<B> {
 // Sublimation from Product-Space MDP
 // ================================================================================================
 
-/// Extract sublimated goal function: fg,z(z, α_z) := max_{x,a} fg(z, x, a)
+/// Extract sublimated goal function `f_{g,σ}(σ, α_σ) := max_{x, a} f_g(x, a)`
+/// over all `(x, a)` such that `F(α_σ | x, a) > 0`.
 ///
-/// # Mathematical Form
-///
-/// For each (z, α_z), we maximize over all base state-actions (x, a) such that
-/// the affordance function F(α_z|x, a) > 0 (i.e., (x, a) can induce α_z).
+/// PP-401 generalization: the function now derives `n_hl_actions` from the
+/// affordance component for `hl_space_index` and accepts `n_hl_states`
+/// explicitly, removing the prior `n_hl_states = 2, n_hl_actions = 2`
+/// hardcoding. The sublimated goal is broadcast across all HL states because
+/// `f_g` is not a function of HL state in the assumed factorization
+/// (Theorem 2.1 hypothesis).
 ///
 /// # Arguments
 ///
-/// * `base_mdp` - Base-level TaskMDP with fg(x, a)
-/// * `affordance` - Affordance function F(α_z|x, a)
-/// * `hl_space_index` - Which HL space to sublimate over
+/// * `base_mdp` — base-level TMDP carrying `f_g(x, a)`
+/// * `affordance` — `F(α_σ | x, a)` for the relevant HL space
+/// * `hl_space_index` — which HL space to sublimate over
+/// * `n_hl_states` — `|Z_{hl_space_index}|` (typically `hl_kernel.dims()[0]`
+///   from the caller)
 ///
 /// # Returns
 ///
-/// Sublimated goal function fg,z(z, α_z), shape [n_z, n_α_z]
-///
-/// # Algorithm
-///
-/// ```text
-/// for each (z, α_z):
-///     fg,z(z, α_z) = max_{x,a: F(α_z|x,a)>0} fg(x, a)
-/// ```
-///
-/// Since z is not in base goal function, we just need:
-/// ```text
-/// fg,z(α_z) = max_{x,a: F(α_z|x,a)>0} fg(x, a)
-/// ```
+/// `f_{g,σ}(z, α_σ)` of shape `[n_hl_states, n_hl_actions]`.
 pub fn maximize_goal_over_base<B: Backend>(
     base_mdp: &TaskMDP<B>,
     affordance: &crate::hierarchy::affordance::FactorizedAffordance<B>,
-    _hl_action_index: usize,
+    hl_space_index: usize,
+    n_hl_states: usize,
 ) -> Tensor<B, 2> {
     use crate::hierarchy::affordance::{AffordanceFunction, HLAction};
-    
+
+    assert!(
+        hl_space_index < affordance.n_hl_spaces(),
+        "hl_space_index {} out of range for affordance with {} HL spaces",
+        hl_space_index,
+        affordance.n_hl_spaces()
+    );
+    assert!(n_hl_states > 0, "n_hl_states must be > 0");
+    assert_eq!(
+        base_mdp.dims.n_states,
+        affordance.n_base_states(),
+        "base_mdp.n_states ({}) must match affordance.n_base_states ({})",
+        base_mdp.dims.n_states,
+        affordance.n_base_states()
+    );
+    assert_eq!(
+        base_mdp.dims.n_actions,
+        affordance.n_base_actions(),
+        "base_mdp.n_actions ({}) must match affordance.n_base_actions ({})",
+        base_mdp.dims.n_actions,
+        affordance.n_base_actions()
+    );
 
     let device = base_mdp.goal_fn.device();
+    let n_hl_actions = affordance.n_hl_actions_for_space(hl_space_index);
 
-    // Get HL action size from first component dimensions
-    // Component shape: [n_base_states, n_base_actions, n_hl_actions_k]
-    let n_hl_actions = 2; // For now, assume binary HL actions (will be generalized)
-
-    // For each HL action, maximize goal over all base state-actions
+    // Per HL action, maximize the base goal over all (x, a) that can induce it.
     let mut fg_hl_data = vec![0.0f32; n_hl_actions];
-
     let goal_data: Vec<f32> = base_mdp.goal_fn.clone().into_data().to_vec().unwrap();
     let n_states = base_mdp.dims.n_states;
     let n_actions = base_mdp.dims.n_actions;
 
     for hl_action_idx in 0..n_hl_actions {
+        let hl_action = HLAction::Single {
+            space_id: hl_space_index,
+            action_id: hl_action_idx,
+        };
         let mut max_goal = 0.0f32;
-
-        // Check all base state-actions
         for x in 0..n_states {
             for a in 0..n_actions {
-                // Create HLAction for single component
-                let hl_action = HLAction::Single {
-                    space_id: 0,
-                    action_id: hl_action_idx,
-                };
-
-                // Check if this (x, a) can induce this HL action
-                let prob = affordance.probability(&hl_action, x, a);
-
-                if prob > 1e-6 {
-                    // This (x, a) can induce α_z, so include its goal value
-                    let fg_xa = goal_data[x * n_actions + a];
-                    max_goal = max_goal.max(fg_xa);
+                if affordance.probability(&hl_action, x, a) > 1e-6 {
+                    max_goal = max_goal.max(goal_data[x * n_actions + a]);
                 }
             }
         }
-
         fg_hl_data[hl_action_idx] = max_goal;
     }
 
-    // Since goal is not state-dependent in HL space, broadcast to all states
-    // fg,z(z, α_z) = fg,z(α_z) for all z (goal independent of HL state)
-    let n_hl_states = 2; // For now, assume binary (will generalize)
+    // Broadcast across all HL states (Theorem 2.1: f_g not a function of HL state).
     let mut fg_hl_full = vec![0.0f32; n_hl_states * n_hl_actions];
-
     for z in 0..n_hl_states {
         for a_z in 0..n_hl_actions {
             fg_hl_full[z * n_hl_actions + a_z] = fg_hl_data[a_z];
@@ -358,67 +356,64 @@ pub fn maximize_goal_over_base<B: Backend>(
     fg_tensor.reshape([n_hl_states, n_hl_actions])
 }
 
-/// Extract high-level constraint function from separable constraint
+/// **PLACEHOLDER**: returns an all-ones HL constraint function (i.e. no HL
+/// constraints anywhere). Theorem 2.4 requires `f_{c,σ}` to be the *separable
+/// HL component* of the full `f_c`, which can only be derived from the
+/// caller's specific factorization. There is no general way to extract it
+/// from `hl_kernel` shape alone — the caller must supply it via the
+/// `hl_constraint` argument to [`SublimatedTMDP::from_product`].
 ///
-/// For separable constraints fc(s, a) = fc,x(x, a) × fc,z(z, α_z) × ...,
-/// we extract the HL component fc,z.
-///
-/// # Arguments
-///
-/// * `hl_kernel` - High-level transition kernel (used for shape)
-///
-/// # Returns
-///
-/// Constraint function fc,z(z, α_z) = 1 (all free)
-///
-/// **Note**: For most problems, HL constraints come from the constraint function
-/// on the full space. This function creates an "all-free" constraint for simplicity.
-/// More complex extraction can be added later.
-pub fn extract_hl_constraint<B: Backend>(hl_kernel: &Tensor<B, 3>) -> Tensor<B, 2> {
+/// PP-402: this placeholder is retained as a no-constraint default for callers
+/// where the HL space genuinely has no constraints; otherwise pass an explicit
+/// constraint tensor.
+pub fn placeholder_hl_constraint_all_free<B: Backend>(hl_kernel: &Tensor<B, 3>) -> Tensor<B, 2> {
     let dims = hl_kernel.dims();
     let n_hl_states = dims[0];
     let n_hl_actions = dims[1];
     let device = hl_kernel.device();
-
-    // Default: all HL state-actions are constraint-free
     Tensor::ones([n_hl_states, n_hl_actions], &device)
 }
 
+/// Deprecated alias kept for one release after PP-402.
+#[deprecated(
+    since = "0.2.0",
+    note = "Renamed to `placeholder_hl_constraint_all_free` to make the \
+            placeholder semantics explicit. For real HL constraints, supply \
+            them directly to `SublimatedTMDP::from_product`."
+)]
+pub fn extract_hl_constraint<B: Backend>(hl_kernel: &Tensor<B, 3>) -> Tensor<B, 2> {
+    placeholder_hl_constraint_all_free(hl_kernel)
+}
+
 impl<B: Backend> SublimatedTMDP<B> {
-    /// Create sublimated TMDP from product-space components
+    /// Create sublimated TMDP from product-space components.
+    ///
+    /// PP-401/402 generalization: this entry point now (a) supports HL spaces
+    /// of arbitrary cardinality (no longer hardcoded binary), and (b) accepts
+    /// an explicit HL constraint function instead of silently defaulting to
+    /// all-ones. For HL spaces with no real constraints, pass `None` to use
+    /// `placeholder_hl_constraint_all_free`.
     ///
     /// # Arguments
     ///
-    /// * `base_mdp` - Base-level TaskMDP M_x = ⟨X, A, Px, fg,x, fc,x⟩
-    /// * `hl_kernel` - High-level transition P_z(z'|z, α_z)
-    /// * `affordance` - Affordance function F(α_z|x, a)
-    /// * `hl_space_index` - Index of HL space to sublimate over
-    ///
-    /// # Returns
-    ///
-    /// Sublimated TMDP M_sub,z on high-level space only
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let sublimated = SublimatedTMDP::from_product(
-    ///     &base_mdp,       // Grid MDP
-    ///     logic_kernel,     // P_σ(σ'|σ, α_σ)
-    ///     &affordance,      // F(α_σ|x, a)
-    ///     0,                // First HL space
-    /// )?;
-    /// ```
+    /// * `base_mdp` — base-level TMDP `M_x = ⟨X, A, P_x, f_{g,x}, f_{c,x}⟩`
+    /// * `hl_kernel` — HL transition `P_σ(σ' | σ, α_σ)`, shape `[|Σ|, |A_σ|, |Σ|]`
+    /// * `affordance` — `F(α_σ | x, a)` for the relevant HL space
+    /// * `hl_space_index` — which HL space to sublimate over
+    /// * `hl_constraint` — `f_{c,σ}(σ, α_σ)` per Theorem 2.4. Pass `None` to use
+    ///   the all-free placeholder for spaces without HL constraints.
     pub fn from_product(
         base_mdp: &TaskMDP<B>,
         hl_kernel: Tensor<B, 3>,
         affordance: &crate::hierarchy::affordance::FactorizedAffordance<B>,
         hl_space_index: usize,
+        hl_constraint: Option<Tensor<B, 2>>,
     ) -> Result<Self, StokError> {
-        // Maximize goal over base space
-        let goal_fn = maximize_goal_over_base(base_mdp, affordance, hl_space_index);
+        let n_hl_states = hl_kernel.dims()[0];
 
-        // Extract HL constraint (for now, all-free)
-        let constraint_fn = extract_hl_constraint(&hl_kernel);
+        let goal_fn = maximize_goal_over_base(base_mdp, affordance, hl_space_index, n_hl_states);
+        let constraint_fn =
+            hl_constraint.unwrap_or_else(|| placeholder_hl_constraint_all_free(&hl_kernel));
 
         Self::new(hl_kernel, goal_fn, constraint_fn, base_mdp.dims.max_time)
     }
@@ -586,8 +581,15 @@ pub fn compute_sublimated_feasibility<B: Backend>(
     hl_kernel: Tensor<B, 3>,
     affordance: &crate::hierarchy::affordance::FactorizedAffordance<B>,
     hl_space_index: usize,
+    hl_constraint: Option<Tensor<B, 2>>,
 ) -> Result<Vec<f32>, StokError> {
-    let sub_mdp = SublimatedTMDP::from_product(base_mdp, hl_kernel, affordance, hl_space_index)?;
+    let sub_mdp = SublimatedTMDP::from_product(
+        base_mdp,
+        hl_kernel,
+        affordance,
+        hl_space_index,
+        hl_constraint,
+    )?;
     sub_mdp.solve()
 }
 
@@ -637,16 +639,16 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_hl_constraint() {
+    fn test_placeholder_hl_constraint_all_free() {
         let device = default_device();
 
         let hl_kernel: Tensor<DefaultBackend, 3> = Tensor::zeros([3, 2, 3], &device);
-        let constraint = extract_hl_constraint(&hl_kernel);
+        let constraint = placeholder_hl_constraint_all_free(&hl_kernel);
 
         let dims = constraint.dims();
         assert_eq!(dims, [3, 2]);
 
-        // Should be all ones (all-free)
+        // Placeholder is all ones (no HL constraints).
         let sample: f32 = constraint.clone().slice([0..1, 0..1]).into_scalar().elem();
         assert_eq!(sample, 1.0);
     }
@@ -755,7 +757,8 @@ mod tests {
         let affordance = FactorizedAffordance::new(vec![f_tensor]);
 
         // Solve sublimated TMDP
-        let sub_mdp = SublimatedTMDP::from_product(&base_mdp, hl_kernel, &affordance, 0).unwrap();
+        let sub_mdp =
+            SublimatedTMDP::from_product(&base_mdp, hl_kernel, &affordance, 0, None).unwrap();
 
         // Check that sublimated goal is maximized
         let fg_sub_data: Vec<f32> = sub_mdp.goal_fn.clone().into_data().to_vec().unwrap();

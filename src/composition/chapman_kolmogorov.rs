@@ -34,71 +34,61 @@ use burn::prelude::*;
 /// - **Normalization**: Σ_{x_f, t_f} η(x_f, t_f | x) = 1
 /// - **Time Horizon**: max_time = T₁ + T₂ - 1 for two options
 /// - **Feasibility**: κ_μ ≤ κ_1 (composition cannot increase feasibility)
+/// Result of composing two or more STOKs.
+///
+/// Per PP-201: `eta_plus` and `eta_minus` are now ALWAYS present (no longer
+/// `Option`). Composition preserves the η+/η- decomposition end-to-end so the
+/// success/failure event semantics from Eqs [15-17] survive Chapman-Kolmogorov
+/// composition (Eq [18]).
+///
+/// # Properties
+///
+/// - **Normalization**: `Σ_{x_f, t_f} η(x_f, t_f | x) = 1` (Eq [29])
+/// - **Decomposition**: `eta = eta_plus + eta_minus` (Eq [17])
+/// - **Time Horizon**: `max_time = T_1 + T_2 - 1` for two options
+/// - **Feasibility**: `kappa = Σ_{x_f, t_f} eta_plus(x_f, t_f | x)` (Eq [15])
 #[derive(Clone, Debug)]
 pub struct ComposedSTOK<B: Backend> {
-    /// Combined termination distribution: η**(x_f, t_f | x_i)
-    ///
-    /// Shape: [n_states, n_states, composed_max_time]
-    /// Contains probability of terminating at (x_f, t_f) from x_i
+    /// Combined termination distribution `η**(x_f, t_f | x_i)`. Shape `[S, S, T]`.
     pub eta: Tensor<B, 3>,
 
-    /// Success termination distribution: η⁺(x_f, t_f | x_i)
-    ///
-    /// Only present if composed with decomposition tracking
-    pub eta_plus: Option<Tensor<B, 3>>,
+    /// Success termination distribution `η⁺(x_f, t_f | x_i)`. Shape `[S, S, T]`.
+    /// Always present per PP-201.
+    pub eta_plus: Tensor<B, 3>,
 
-    /// Failure termination distribution: η⁻(x_f, t_f | x_i)
-    ///
-    /// Only present if composed with decomposition tracking
-    pub eta_minus: Option<Tensor<B, 3>>,
+    /// Failure termination distribution `η⁻(x_f, t_f | x_i)`. Shape `[S, S, T]`.
+    /// Always present per PP-201.
+    pub eta_minus: Tensor<B, 3>,
 
-    /// Cumulative feasibility: κ_μ(x)
-    ///
-    /// Derived from η⁺: κ(x) = Σ_{x_f, t_f} η⁺(x_f, t_f | x)
+    /// Cumulative feasibility `κ_μ(x) = Σ_{x_f, t_f} η⁺(x_f, t_f | x)` (Eq [15]).
     pub kappa: Tensor<B, 1>,
 
-    /// Metadata
     pub n_states: usize,
     pub max_time: usize,
 
-    /// Source option names (for debugging/tracing)
+    /// Source option names (for debugging/tracing).
     pub source_options: Vec<String>,
 }
 
 impl<B: Backend> ComposedSTOK<B> {
-    /// Convert to STOKKernel for further composition
-    ///
-    /// # Returns
-    ///
-    /// STOKKernel with same tensors (policy set to zeros as placeholder)
+    /// Convert to a `STOKKernel` for further composition. The conversion is
+    /// now lossless because `eta_plus` and `eta_minus` are always present
+    /// (PP-201). Policy is set to zeros — composed options have no single
+    /// underlying policy.
     pub fn to_stok_kernel(&self) -> Result<STOKKernel<B>, StokError> {
         let device = self.eta.device();
-
-        // Get or create decomposition
-        let (eta_plus, eta_minus) = match (&self.eta_plus, &self.eta_minus) {
-            (Some(ep), Some(em)) => (ep.clone(), em.clone()),
-            _ => {
-                // No decomposition available - put all mass in eta_plus
-                // This is technically incorrect but allows chaining
-                let eta_plus = self.eta.clone();
-                let eta_minus = Tensor::zeros_like(&self.eta);
-                (eta_plus, eta_minus)
-            }
-        };
-
-        // Policy is undefined for composed options
         let policy = Tensor::zeros([self.n_states], &device);
 
         Ok(STOKKernel {
-            eta_plus,
-            eta_minus,
+            eta_plus: self.eta_plus.clone(),
+            eta_minus: self.eta_minus.clone(),
             kappa: self.kappa.clone(),
             policy,
             dims: STOKDimensions::new(self.n_states, self.max_time),
         })
     }
 
-    /// Get device this composed STOK is allocated on
+    /// Get device this composed STOK is allocated on.
     pub fn device(&self) -> B::Device {
         self.eta.device()
     }
@@ -210,31 +200,45 @@ pub fn compose_soks<B: Backend>(
     })
 }
 
-/// Compose two STOKs via Chapman-Kolmogorov equation
+/// Compose two STOKs via the Chapman-Kolmogorov equation, preserving the
+/// η+/η- decomposition end-to-end.
 ///
-/// Implements Equation [18]:
-/// ```text
-/// η_μ(x_μ, t_μ | x) = Σ_{x_{f1}} Σ_{t_{f1}} η_{o2}(x_μ, t_μ - t_{f1} | x_{f1}) · η_{o1}(x_{f1}, t_{f1} | x)
-/// ```
+/// Implements Eq [18] with success/failure event tracking from Eqs [15-17].
+///
+/// # Decomposition rules
+///
+/// - **Composed success** (`η+_μ`) = `η+_1 ∘ η+_2`
+///   (both options' success events fire in sequence)
+/// - **Composed failure** (`η-_μ`) = `η-_1` (option 1 failed) `+` `η+_1 ∘ η-_2`
+///   (option 1 succeeded then option 2 failed)
+///
+/// # PP-201 change
+///
+/// Prior to PP-201 there were two functions: `compose_stoks` (lossy — set
+/// `eta_plus`/`eta_minus` to `None`) and `compose_stoks_with_decomposition`
+/// (paper-faithful). They have been unified — `compose_stoks` now returns
+/// the decomposed result by default. `compose_stoks_with_decomposition` is
+/// retained as a deprecated alias for one release.
 ///
 /// # Arguments
 ///
-/// * `stok1` - First option (executed first)
-/// * `stok2` - Second option (executed after stok1 terminates)
+/// * `stok1` — first option
+/// * `stok2` — second option (executed after `stok1` terminates successfully)
 ///
 /// # Returns
 ///
-/// Composed STOK with extended time horizon
+/// `ComposedSTOK` with η+ and η- both populated.
 ///
-/// # Time Complexity
+/// # Time complexity
 ///
-/// O(S³ · T₁ · T₂) where S is state space size, T₁ and T₂ are time horizons
+/// `O(S³ · T_1 · T_2)`.
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// let composed = compose_stoks(&stok1, &stok2)?;
 /// assert_eq!(composed.max_time, stok1.max_time() + stok2.max_time() - 1);
+/// // η+ + η- = η, always — no Option to unwrap.
 /// ```
 pub fn compose_stoks<B: Backend>(
     stok1: &STOKKernel<B>,
@@ -254,137 +258,25 @@ pub fn compose_stoks<B: Backend>(
     let t_composed = composed_time_horizon(t1, t2);
     let device = stok1.device();
 
-    // Get combined STOKs: η** = η⁺ + η⁻
-    let eta1 = stok1.eta_plus.clone() + stok1.eta_minus.clone(); // [S, S, T1]
-    let eta2 = stok2.eta_plus.clone() + stok2.eta_minus.clone(); // [S, S, T2]
+    let mut eta_plus_composed: Tensor<B, 3> = Tensor::zeros([s, s, t_composed], &device);
+    let mut eta_minus_composed: Tensor<B, 3> = Tensor::zeros([s, s, t_composed], &device);
 
-    // Initialize composed tensor
-    let mut eta_composed = Tensor::zeros([s, s, t_composed], &device);
-
-    // Compute Chapman-Kolmogorov convolution
-    // For each output time t_μ, sum over all valid (t_1, t_2) pairs where t_1 + t_2 = t_μ
-    for t_mu in 0..t_composed {
-        // Valid range for t_1:
-        // - t_1 >= 0
-        // - t_1 < t1 (must be valid index in η_1)
-        // - t_mu - t_1 >= 0 (t_2 must be non-negative)
-        // - t_mu - t_1 < t2 (must be valid index in η_2)
-
-        let t1_min = t_mu.saturating_sub(t2 - 1);
-        let t1_max = t_mu.min(t1 - 1);
-
-        // Skip if no valid t_1 values
-        if t1_min > t1_max {
-            continue;
-        }
-
-        // Accumulate contributions from all valid (t_1, t_2) pairs
-        let mut slice_sum = Tensor::zeros([s, s], &device);
-
-        for t_1 in t1_min..=t1_max {
-            let t_2 = t_mu - t_1;
-
-            // Get time slices
-            // η_1[:, :, t_1] has shape [S, S]
-            // η_1[x_i, x_m, t_1] = P(terminate at x_m, time t_1 | start x_i)
-            let eta1_t = get_time_slice(&eta1, t_1); // [S, S]
-
-            // η_2[:, :, t_2] has shape [S, S]
-            // η_2[x_m, x_f, t_2] = P(terminate at x_f, time t_2 | start x_m)
-            let eta2_t = get_time_slice(&eta2, t_2); // [S, S]
-
-            // Compose: marginalize over intermediate state x_m
-            // Result[x_i, x_f] = Σ_{x_m} η_1[x_i, x_m] * η_2[x_m, x_f]
-            // This is matrix multiplication: η_1 @ η_2
-            let contribution = eta1_t.matmul(eta2_t);
-
-            slice_sum = slice_sum + contribution;
-        }
-
-        // Store composed slice
-        eta_composed = set_time_slice(&eta_composed, &slice_sum, t_mu);
-    }
-
-    // Compute derived quantities
-    // κ_μ(x) = Σ_{x_f, t_f} η_μ(x_f, t_f | x)
-    // eta_composed [S, S, T] -> sum over time (dim 2) -> [S, S] -> sum over final states (dim 1) -> [S]
-    let kappa = eta_composed
-        .clone()
-        .sum_dim(2)
-        .squeeze::<2>() // [S, S, T] -> [S, S]
-        .sum_dim(1)
-        .squeeze::<1>(); // [S, S] -> [S]
-
-    Ok(ComposedSTOK {
-        eta: eta_composed,
-        eta_plus: None, // Basic composition doesn't track decomposition
-        eta_minus: None,
-        kappa,
-        n_states: s,
-        max_time: t_composed,
-        source_options: vec!["o1".to_string(), "o2".to_string()],
-    })
-}
-
-/// Compose two STOKs while preserving success/failure decomposition
-///
-/// Tracks η⁺ and η⁻ through composition to maintain event interpretability.
-///
-/// # Decomposition Rules
-///
-/// - **Sequence succeeds**: o1 succeeds AND o2 succeeds
-/// - **Sequence fails**: o1 fails OR (o1 succeeds AND o2 fails)
-///
-/// # Arguments
-///
-/// * `stok1` - First option
-/// * `stok2` - Second option
-///
-/// # Returns
-///
-/// Composed STOK with η⁺/η⁻ decomposition preserved
-pub fn compose_stoks_with_decomposition<B: Backend>(
-    stok1: &STOKKernel<B>,
-    stok2: &STOKKernel<B>,
-) -> Result<ComposedSTOK<B>, StokError> {
-    // Validate compatibility
-    if stok1.n_states() != stok2.n_states() {
-        return Err(StokError::DimensionMismatch {
-            expected: vec![stok1.n_states()],
-            got: vec![stok2.n_states()],
-        });
-    }
-
-    let s = stok1.n_states();
-    let t1 = stok1.max_time();
-    let t2 = stok2.max_time();
-    let t_composed = composed_time_horizon(t1, t2);
-    let device = stok1.device();
-
-    // Initialize decomposed outputs
-    let mut eta_plus_composed = Tensor::zeros([s, s, t_composed], &device);
-    let mut eta_minus_composed = Tensor::zeros([s, s, t_composed], &device);
-
-    // Case 1: o1 fails (η_1⁻)
-    // The sequence fails at the same time and state o1 fails
-    // No composition needed - just copy η_1⁻ to output
+    // Case 1: o1 fails — sequence fails at the same (state, time) o1 failed.
     for t in 0..t1 {
         let eta1_minus_t = get_time_slice(&stok1.eta_minus, t);
         eta_minus_composed = set_time_slice(&eta_minus_composed, &eta1_minus_t, t);
     }
 
-    // Case 2: o1 succeeds (η_1⁺), then o2 executes
-    // Need to compose η_1⁺ with both η_2⁺ and η_2⁻
+    // Case 2: o1 succeeds, o2 executes. Marginalize over intermediate state.
     for t_1 in 0..t1 {
         let eta1_plus_t = get_time_slice(&stok1.eta_plus, t_1); // [S, S]
 
         for t_2 in 0..t2 {
             let t_mu = t_1 + t_2;
 
-            // Sub-case 2a: o2 succeeds -> full sequence succeeds
+            // Sub-case 2a: o2 succeeds -> full sequence succeeds (η+_μ).
             let eta2_plus_t = get_time_slice(&stok2.eta_plus, t_2);
             let success_contribution = eta1_plus_t.clone().matmul(eta2_plus_t);
-
             let current_plus = get_time_slice(&eta_plus_composed, t_mu);
             eta_plus_composed = set_time_slice(
                 &eta_plus_composed,
@@ -392,10 +284,9 @@ pub fn compose_stoks_with_decomposition<B: Backend>(
                 t_mu,
             );
 
-            // Sub-case 2b: o2 fails -> sequence fails
+            // Sub-case 2b: o2 fails -> sequence fails (η-_μ).
             let eta2_minus_t = get_time_slice(&stok2.eta_minus, t_2);
             let failure_contribution = eta1_plus_t.clone().matmul(eta2_minus_t);
-
             let current_minus = get_time_slice(&eta_minus_composed, t_mu);
             eta_minus_composed = set_time_slice(
                 &eta_minus_composed,
@@ -405,26 +296,37 @@ pub fn compose_stoks_with_decomposition<B: Backend>(
         }
     }
 
-    // Combined η
     let eta_composed = eta_plus_composed.clone() + eta_minus_composed.clone();
-
-    // κ from η⁺: sum over time (dim 2) then final states (dim 1)
+    // κ_μ from η+_μ per Eq [15].
     let kappa = eta_plus_composed
         .clone()
         .sum_dim(2)
-        .squeeze::<2>() // [S, S, T] -> [S, S]
+        .squeeze::<2>()
         .sum_dim(1)
-        .squeeze::<1>(); // [S, S] -> [S]
+        .squeeze::<1>();
 
     Ok(ComposedSTOK {
         eta: eta_composed,
-        eta_plus: Some(eta_plus_composed),
-        eta_minus: Some(eta_minus_composed),
+        eta_plus: eta_plus_composed,
+        eta_minus: eta_minus_composed,
         kappa,
         n_states: s,
         max_time: t_composed,
         source_options: vec!["o1".to_string(), "o2".to_string()],
     })
+}
+
+/// Deprecated alias for `compose_stoks` (kept for one release after PP-201).
+#[deprecated(
+    since = "0.2.0",
+    note = "Use `compose_stoks`. As of PP-201 the default `compose_stoks` \
+            preserves η+/η- decomposition, so this alias is redundant."
+)]
+pub fn compose_stoks_with_decomposition<B: Backend>(
+    stok1: &STOKKernel<B>,
+    stok2: &STOKKernel<B>,
+) -> Result<ComposedSTOK<B>, StokError> {
+    compose_stoks(stok1, stok2)
 }
 
 // ============================================================================
@@ -654,9 +556,9 @@ mod tests {
         let kappa: Tensor<DefaultBackend, 1> = Tensor::zeros([3], &device);
 
         let composed = ComposedSTOK {
+            eta_plus: eta.clone(),
+            eta_minus: Tensor::zeros([3, 3, 5], &device),
             eta,
-            eta_plus: None,
-            eta_minus: None,
             kappa,
             n_states: 3,
             max_time: 5,

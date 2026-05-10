@@ -493,4 +493,196 @@ mod tests {
             );
         }
     }
+
+    // ========================================================================
+    // PP-102 / CHK-EQ7: Analytic-case κ-OKBE tests
+    // ========================================================================
+    //
+    // These verify Eq [7] against problems with hand-computable closed-form κ.
+    // The closed form follows Appendix 5: κ(x_i) = e_i^T (I - P_NN)^{-1} P_N+ 1.
+
+    /// Build a single-action TaskMDP with explicit transitions, goal, and
+    /// constraint vectors. Used by the analytic-case tests below.
+    fn make_single_action_mdp(
+        device: &<DefaultBackend as Backend>::Device,
+        n: usize,
+        transition_rows: &[Vec<f32>], // transition_rows[i][j] = P(j|i, action=0)
+        fg: &[f32],
+        fc: &[f32],
+    ) -> TaskMDP<DefaultBackend> {
+        assert_eq!(transition_rows.len(), n);
+        assert_eq!(fg.len(), n);
+        assert_eq!(fc.len(), n);
+
+        let mut trans_data = vec![0.0f32; n * 1 * n];
+        for (i, row) in transition_rows.iter().enumerate() {
+            assert_eq!(row.len(), n);
+            for (j, &p) in row.iter().enumerate() {
+                trans_data[i * n + j] = p;
+            }
+        }
+        let trans: Tensor<DefaultBackend, 3> =
+            Tensor::<DefaultBackend, 1>::from_floats(trans_data.as_slice(), device)
+                .reshape([n, 1, n]);
+
+        let goal: Tensor<DefaultBackend, 2> =
+            Tensor::<DefaultBackend, 1>::from_floats(fg, device).reshape([n, 1]);
+        let constraint: Tensor<DefaultBackend, 2> =
+            Tensor::<DefaultBackend, 1>::from_floats(fc, device).reshape([n, 1]);
+
+        TaskMDP::<DefaultBackend>::new(trans, goal, constraint, 20)
+            .expect("valid single-action MDP")
+    }
+
+    /// Run bellman_backup_kappa to convergence (for analytic tests).
+    fn run_to_kappa_fixed_point<B: Backend>(mdp: &TaskMDP<B>, max_iter: usize) -> Vec<f32> {
+        let device = mdp.device();
+        let mut kappa: Tensor<B, 1> = Tensor::zeros([mdp.n_states()], &device);
+        for _ in 0..max_iter {
+            let (kappa_new, _) = bellman_backup_kappa(&kappa, mdp);
+            let delta: f32 = (kappa_new.clone() - kappa.clone()).abs().max().into_scalar().elem();
+            kappa = kappa_new;
+            if delta < 1e-9 {
+                break;
+            }
+        }
+        kappa.into_data().to_vec().unwrap()
+    }
+
+    /// CHK-EQ7 case (a): deterministic 3-state chain 0→1→2, goal at 2.
+    /// Closed form: κ = [1, 1, 1] (every state reaches the goal under right-action).
+    #[test]
+    fn test_kappa_okbe_deterministic_chain_analytic() {
+        let device = default_device();
+        // Single action moves right (with state 2 absorbing on itself).
+        let mdp = make_single_action_mdp(
+            &device,
+            3,
+            &[
+                vec![0.0, 1.0, 0.0], // 0 → 1
+                vec![0.0, 0.0, 1.0], // 1 → 2
+                vec![0.0, 0.0, 1.0], // 2 → 2 (absorbing)
+            ],
+            &[0.0, 0.0, 1.0], // goal at state 2 only
+            &[1.0, 1.0, 1.0], // no constraints
+        );
+
+        let kappa = run_to_kappa_fixed_point(&mdp, 100);
+        for (i, &k) in kappa.iter().enumerate() {
+            assert!(
+                approx_eq(k, 1.0, 1e-6),
+                "State {} should have κ=1.0, got {}",
+                i,
+                k
+            );
+        }
+    }
+
+    /// CHK-EQ7 case (b): stochastic 3-state chain with constraint risk at
+    /// state 1 (`f_c = 0.5`). Goal at state 2 only. Single right-moving action.
+    ///
+    /// Under the policy that always goes right, the κ recursion is:
+    ///   κ(2) = f_1 + f_2·κ(2) = 1 + 0 = 1
+    ///   κ(1) = f_g(1)·f_c(1) + (1-f_g(1))·f_c(1)·κ(2) = 0 + 0.5·1 = 0.5
+    ///   κ(0) = f_g(0)·f_c(0) + (1-f_g(0))·f_c(0)·κ(1) = 0 + 1·0.5 = 0.5
+    /// Closed form: κ = [0.5, 0.5, 1.0].
+    #[test]
+    fn test_kappa_okbe_stochastic_constraint_analytic() {
+        let device = default_device();
+        let mdp = make_single_action_mdp(
+            &device,
+            3,
+            &[
+                vec![0.0, 1.0, 0.0],
+                vec![0.0, 0.0, 1.0],
+                vec![0.0, 0.0, 1.0],
+            ],
+            &[0.0, 0.0, 1.0],
+            &[1.0, 0.5, 1.0], // 50% constraint-violation risk at state 1
+        );
+
+        let kappa = run_to_kappa_fixed_point(&mdp, 200);
+        let expected = [0.5, 0.5, 1.0];
+        for (i, (&k, &e)) in kappa.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                approx_eq(k, e, 1e-5),
+                "State {}: expected κ={}, got {}",
+                i,
+                e,
+                k
+            );
+        }
+    }
+
+    /// CHK-EQ7 case (c): constraint blocking. 3-state chain, goal at state 2,
+    /// but state 1 has `f_c = 0` so the path is severed. Closed form:
+    ///   κ(2) = 1, κ(1) = f_1 + f_2·... = 0 + 0·... = 0, κ(0) = 0 + 1·0 = 0.
+    /// Expected: κ = [0, 0, 1].
+    #[test]
+    fn test_kappa_okbe_constraint_blocking_analytic() {
+        let device = default_device();
+        let mdp = make_single_action_mdp(
+            &device,
+            3,
+            &[
+                vec![0.0, 1.0, 0.0],
+                vec![0.0, 0.0, 1.0],
+                vec![0.0, 0.0, 1.0],
+            ],
+            &[0.0, 0.0, 1.0],
+            &[1.0, 0.0, 1.0], // state 1 is a hard constraint violation
+        );
+
+        let kappa = run_to_kappa_fixed_point(&mdp, 100);
+        let expected = [0.0, 0.0, 1.0];
+        for (i, (&k, &e)) in kappa.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                approx_eq(k, e, 1e-6),
+                "State {}: expected κ={}, got {}",
+                i,
+                e,
+                k
+            );
+        }
+    }
+
+    /// CHK-EQ7: explicit closed-form check via the Appendix 5 formula
+    /// κ(x_i) = e_i^T (I - P_NN)^{-1} P_N+ 1 on a stochastic 3-state problem
+    /// where some mass leaks back via a self-loop.
+    ///
+    /// Setup (single right-moving action with self-loop at state 0):
+    ///   from 0: P(0→0) = 0.2, P(0→1) = 0.8
+    ///   from 1: P(1→2) = 1.0
+    ///   from 2: absorbing (2→2)
+    ///   f_g = [0, 0, 1], f_c = [1, 1, 1]
+    /// Closed form (single action so π is forced):
+    ///   κ(2) = 1
+    ///   κ(1) = 0 + 1·κ(2) = 1
+    ///   κ(0) = 0 + 1·(0.2·κ(0) + 0.8·κ(1)) ⟹ 0.8·κ(0) = 0.8 ⟹ κ(0) = 1
+    /// Expected: κ = [1, 1, 1] (the self-loop only delays — does not block).
+    #[test]
+    fn test_kappa_okbe_self_loop_recurrent() {
+        let device = default_device();
+        let mdp = make_single_action_mdp(
+            &device,
+            3,
+            &[
+                vec![0.2, 0.8, 0.0], // self-loop with prob 0.2
+                vec![0.0, 0.0, 1.0],
+                vec![0.0, 0.0, 1.0],
+            ],
+            &[0.0, 0.0, 1.0],
+            &[1.0, 1.0, 1.0],
+        );
+
+        let kappa = run_to_kappa_fixed_point(&mdp, 500);
+        for (i, &k) in kappa.iter().enumerate() {
+            assert!(
+                approx_eq(k, 1.0, 1e-5),
+                "State {} should have κ=1 (self-loop only delays), got {}",
+                i,
+                k
+            );
+        }
+    }
 }

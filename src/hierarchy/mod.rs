@@ -40,7 +40,7 @@ pub use affordance::{
     AffordanceFunction, FactorizedAffordance, HLAction, HLActionSet,
 };
 pub use factorization::{
-    FactorizedSTOK, assemble_factorized_stok,
+    FactorizedSTOK, assemble_factorized_stok, assemble_factorized_stok_with_hl_events,
 };
 pub use modes::{
     KeyDoorMode, ModeConditionedMDP, ModeFunction, MultiBitMode, NoMode, ThresholdMode,

@@ -257,11 +257,14 @@ pub use composition::{
     StateOptionKernel,
 };
 
-// Phase 4 re-exports
+// Phase 4 re-exports + M5 paper-faithful planning kernel + M6 Algorithm 2 + M7 option-set builders.
 pub use planning::{
-    best_first_search, tree_search, GoalInfo, GoalKernel, Plan, PlanError, PlanningQuery,
-    STOKSampler, SearchResult, SearchStats, SearchStrategy, SimulatedTrajectory,
-    SimulationResult, TerminationOutcome, TreeSearchConfig, sample_categorical, simulate_plan,
+    algorithm_2_search, best_first_search, build_affordance_option_set, build_state_option_set,
+    tree_search, Algorithm2Config, Algorithm2Node, Algorithm2Plan, Algorithm2Result,
+    Algorithm2Stats, FactorizedGoalEntry, FactorizedGoalKernel, GoalInfo, GoalKernel, Plan,
+    PlanError, PlanKernel, PlanStep, PlanTrace, PlanningQuery, SearchResult, SearchStats,
+    SearchStrategy, SimulatedTrajectory, SimulationResult, STOKSampler, TerminationOutcome,
+    TreeSearchConfig, sample_categorical, simulate_plan,
 };
 
 pub use prediction::{CumulativeEventFunction, StatePredictionKernel, TemporalEventFunction};
@@ -270,4 +273,5 @@ pub use prediction::{CumulativeEventFunction, StatePredictionKernel, TemporalEve
 pub use hierarchy::{
     AffordanceFunction, FactorizedAffordance, FactorizedSTOK, HLAction, HLActionSet, HLState,
     ProductSpaceDims, ProductState, assemble_factorized_stok,
+    assemble_factorized_stok_with_hl_events,
 };
