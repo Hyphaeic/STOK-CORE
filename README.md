@@ -14,12 +14,10 @@
   
   [HPL License](https://github.com/hyphaeic/hpl) · [Local License](LICENSE)
 
-<<<<<<< HEAD
 </div>
 
 ---
 
-=======
 [![Paper](https://img.shields.io/badge/arXiv-2506.09499-b31b1b.svg)](https://arxiv.org/abs/2506.09499)
 [![Tests](https://img.shields.io/badge/tests-280%2B%20passing-success)](https://github.com/Hyphaeic/stok-core)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
